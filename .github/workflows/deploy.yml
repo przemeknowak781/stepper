@@ -1,8 +1,14 @@
 name: Deploy to GitHub Pages
 
+# Deploys on push to main. The repository's default branch is currently
+# `claude/3d-to-step-converter-7borlp`, and GitHub's auto-created `github-pages`
+# environment only allows deployments from the DEFAULT branch — so that branch
+# is listed too, otherwise the deploy job is rejected before it can run. Once
+# `main` is made the default branch (Settings -> Branches), this can be reduced
+# to `[main]`.
 on:
   push:
-    branches: [main]
+    branches: [main, claude/3d-to-step-converter-7borlp]
   workflow_dispatch:
 
 permissions:
