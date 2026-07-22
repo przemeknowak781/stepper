@@ -70,31 +70,56 @@ export function ControlsPanel() {
             value={settings.method}
             onChange={(method) => update({ method })}
             options={[
-              { value: 'smooth', label: 'Smooth (marching cubes)' },
-              { value: 'voxel', label: 'Voxel (blocky)' },
+              { value: 'faithful', label: 'Faithful (exact B-rep)' },
+              { value: 'voxel', label: 'Voxel (repair)' },
+              { value: 'smooth', label: 'Smooth (organic)' },
             ]}
           />
         </Row>
 
-        <Row label="Grid resolution" value={`${settings.resolution}`}>
-          <Slider
-            min={8}
-            max={128}
-            step={1}
-            value={settings.resolution}
-            onChange={(e) => update({ resolution: Number(e.target.value) })}
-          />
-        </Row>
+        <p className="text-2xs leading-4 text-ink-4">
+          {settings.method === 'faithful'
+            ? 'Merges coplanar faces into an exact, economical solid. Broken meshes are auto-repaired first.'
+            : settings.method === 'voxel'
+              ? 'Rebuilds any mesh into a watertight blocky solid, then merges flat faces.'
+              : 'Rebuilds a smooth rounded surface (fine triangle mesh in STEP).'}
+        </p>
 
-        <Row label="Layers" value={`${settings.slices}`}>
-          <Slider
-            min={4}
-            max={128}
-            step={1}
-            value={settings.slices}
-            onChange={(e) => update({ slices: Number(e.target.value) })}
-          />
-        </Row>
+        {(settings.method === 'faithful' || settings.method === 'voxel') && (
+          <Row label="Planar tolerance" value={`${settings.planarToleranceDeg}°`}>
+            <Slider
+              min={0}
+              max={30}
+              step={0.5}
+              value={settings.planarToleranceDeg}
+              onChange={(e) => update({ planarToleranceDeg: Number(e.target.value) })}
+            />
+          </Row>
+        )}
+
+        {settings.method !== 'faithful' && (
+          <>
+            <Row label="Grid resolution" value={`${settings.resolution}`}>
+              <Slider
+                min={8}
+                max={128}
+                step={1}
+                value={settings.resolution}
+                onChange={(e) => update({ resolution: Number(e.target.value) })}
+              />
+            </Row>
+
+            <Row label="Layers" value={`${settings.slices}`}>
+              <Slider
+                min={4}
+                max={128}
+                step={1}
+                value={settings.slices}
+                onChange={(e) => update({ slices: Number(e.target.value) })}
+              />
+            </Row>
+          </>
+        )}
 
         {settings.method === 'smooth' && (
           <Row label="Smoothing" value={`${settings.smoothIterations} it`}>
@@ -108,17 +133,19 @@ export function ControlsPanel() {
           </Row>
         )}
 
-        <Row label="Slicing axis">
-          <Segmented<SliceAxis>
-            value={settings.axis}
-            onChange={(axis) => update({ axis })}
-            options={[
-              { value: 'x', label: 'X' },
-              { value: 'y', label: 'Y' },
-              { value: 'z', label: 'Z' },
-            ]}
-          />
-        </Row>
+        {settings.method !== 'faithful' && (
+          <Row label="Slicing axis">
+            <Segmented<SliceAxis>
+              value={settings.axis}
+              onChange={(axis) => update({ axis })}
+              options={[
+                { value: 'x', label: 'X' },
+                { value: 'y', label: 'Y' },
+                { value: 'z', label: 'Z' },
+              ]}
+            />
+          </Row>
+        )}
       </section>
 
       <section className="space-y-2">

@@ -7,31 +7,45 @@ watertight **engineering solid** and exports it to **STEP (ISO 10303-21, AP214)*
 It reuses the 3D environment, design system, mesh loaders and the
 voxel *slicer* from the sibling **Optimizer** project.
 
-## Why reconstruct instead of repair?
+## Conversion: faithful first, reconstruct only when forced
 
-Meshes exported from scanners, sculpting tools or game pipelines are usually
-**not** valid solids: open holes, non-manifold edges, self-intersections,
-flipped normals, duplicated faces. CAD kernels reject those.
+The goal is an **excellent, economical, exact** solid — not a heavy
+approximation. A 12-triangle box must come out as a 6-face box, not a blob of
+thousands of facets. Stepper has three methods:
 
-Stepper's conversion is **reconstruction-based**, not repair-based:
+### `faithful` (default) — mesh → B-rep, no resampling
 
-1. **Voxelise** — the input surface is rasterised into an occupancy grid by the
-   Optimizer slicer (`sliceAndVoxelize`). An even–odd scanline fill marks which
-   cells are inside the body.
-2. **Reconstruct a fresh surface** from the filled volume:
-   - **Voxel** (`occupancyToSolid`) — a cuberille shell; blocky but the most
-     literal discretisation, few large planar facets.
-   - **Smooth** (`marchingCubesFromVoxelDensity` + feature-preserving Taubin
-     smoothing) — a rounded iso-surface that hugs the original silhouette.
+`planarizeMesh` merges the input's **coplanar, edge-adjacent triangles** into
+large planar faces and drops the redundant collinear vertices from each face's
+boundary. Nothing is resampled, so the output geometry is **bit-identical to the
+input surface** while a flat region made of hundreds of triangles collapses to a
+single polygon. Real numbers: the reference `m2.stl` goes from **516 triangles →
+129 exact planar faces** (and down to 7 with a looser tolerance). A box → 6
+faces / 12 edges / 8 vertices, exactly.
 
-Because the output surface is generated from scratch around the volume, the
-result is **watertight and 2-manifold by construction** — every defect in the
-input connectivity simply disappears. The grid **resolution** is the single
-optimisation knob: coarse grids simplify (fewer faces, lighter STEP), fine grids
-stay faithful.
+The one knob is the **planar tolerance** (degrees): 0° keeps every distinct
+plane; raising it merges gently-curved regions into fewer planar faces (a
+deliberate approximation you control). This path needs a clean closed manifold.
 
-The app reports whether the output is a closed manifold and warns when the input
-had open regions that were sealed.
+### `voxel` / `smooth` — reconstruction, to *repair* broken input
+
+Meshes from scanners or sculpting tools are often not valid solids (holes,
+non-manifold edges, self-intersections, flipped normals). When the faithful path
+detects a non-manifold input it automatically falls back to voxel
+reconstruction; you can also pick it explicitly:
+
+1. **Voxelise** — rasterise into an occupancy grid via the Optimizer slicer
+   (`sliceAndVoxelize`, even–odd scanline fill).
+2. Rebuild a fresh watertight surface: **voxel** (`occupancyToSolid` cuberille,
+   then planarised so the flat sides merge into big rectangles) or **smooth**
+   (`marchingCubesFromVoxelDensity` + feature-preserving Taubin smoothing).
+
+Because the surface is regenerated around the filled volume, the result is
+**watertight and 2-manifold by construction** — input defects disappear. Grid
+resolution trades fidelity for weight.
+
+The app reports whether the output is exact (faithful) or was reconstructed, its
+STEP face/edge/vertex counts, and any open regions that had to be sealed.
 
 ## STEP export
 

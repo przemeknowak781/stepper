@@ -11,23 +11,27 @@ mesh loaders and voxel *slicer* from the sibling **Optimizer** repo.
 
 See `README.md` for the user-facing overview.
 
-## Core idea: reconstruction, not repair
+## Core idea: faithful planar merge first; reconstruct only to repair
 
-Conversion is reconstruction-based so topology is **correct by construction**.
-The pipeline lives in `src/lib/geometry/convert.ts::convertMeshToSolid`:
+`src/lib/geometry/convert.ts::convertMeshToSolid` picks a method:
 
-1. `computeGridFromVertices` → fit a voxel grid to the mesh AABB (resolution =
-   in-plane cells across the longer extent, slices = layers along `axis`).
-2. `sliceAndVoxelize` (ported from Optimizer) → even–odd scanline fill into an
-   occupancy grid. `openRowFraction > 0` means the input had open regions.
-3. Rebuild a fresh surface:
-   - `method: 'voxel'` → `occupancyToSolid` (cuberille, welded corners).
-   - `method: 'smooth'` → `marchingCubesFromVoxelDensity` (iso 0.5) then
-     `taubinSmoothBounded` (feature-preserving; won't sever thin members).
+- **`faithful` (default)** → `planarizeMesh` (`src/lib/geometry/planarize.ts`).
+  Merges coplanar, edge-adjacent triangles (union-find over the dual edge graph)
+  into large planar faces, extracts each region's boundary loops, and simplifies
+  out collinear NON-corner vertices (a vertex touching ≥3 regions is a corner and
+  is kept, so shared edges between faces stay consistent → closed shell). NO
+  resampling: output geometry equals the input surface. A box → 6 faces; `m2.stl`
+  → 129 faces from 516 triangles. Requires a closed 2-manifold input; otherwise
+  it auto-falls back to voxel reconstruction, then planarises the repaired shell.
+  Knob: `planarToleranceDeg` (coplanar merge angle).
+- **`voxel` / `smooth`** → reconstruction, to *repair* broken meshes:
+  `sliceAndVoxelize` (ported) → `occupancyToSolid` (cuberille, then planarised)
+  or `marchingCubesFromVoxelDensity` + `taubinSmoothBounded`.
 
-Every output is watertight/2-manifold because it is generated around the filled
-volume, not inherited from input connectivity. `isWatertight` (every undirected
-edge used by exactly two triangles) is the honest check surfaced in the UI.
+`convertMeshToSolid` returns BOTH a triangulated `solid` (viewport + STL) and a
+polygonal `brep` (economical STEP; null for `smooth`). `isWatertight` (every
+undirected edge used by exactly two triangles) is the honest check; the faithful
+path reports `faithful: true`, reconstruction reports `reconstructed: true`.
 
 ## Ported-from-Optimizer modules (do not diverge casually)
 
@@ -39,9 +43,14 @@ project-type deps). Keep these in sync with Optimizer when fixing bugs.
 
 ## STEP exporter invariants (`src/lib/step/exportSTEP.ts`)
 
+- One shared core `emitStep(vertices, StepFace[])` drives two entry points:
+  `exportSTEP(vertices, indices)` (one planar face per triangle — verbose
+  fallback) and `exportSTEPFromFaces(vertices, faces)` (merged planar faces from
+  `planarizeMesh` — the economical path the UI uses via `downloadSTEP`).
 - Output is a full AP214 `ADVANCED_BREP_SHAPE_REPRESENTATION` → `MANIFOLD_SOLID_BREP`
-  → `CLOSED_SHELL` of planar `ADVANCED_FACE`s (one per triangle), plus the
-  product/context boilerplate so all CAD tools import it.
+  → `CLOSED_SHELL` of planar `ADVANCED_FACE`s (a `FACE_OUTER_BOUND` plus
+  `FACE_BOUND` holes), plus the product/context boilerplate so all CAD tools
+  import it.
 - **Vertices and edges are shared.** `weldMesh` collapses coincident vertices;
   each undirected edge becomes ONE `EDGE_CURVE`, referenced by exactly two
   `ORIENTED_EDGE`s with opposite sense. The test in `tests/unit/exportSTEP.test.ts`

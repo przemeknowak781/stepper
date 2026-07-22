@@ -15,6 +15,7 @@ function Stat({ label, value }: { label: string; value: string }) {
 export function ExportPanel() {
   const report = useConverterStore((s) => s.report)
   const solid = useConverterStore((s) => s.solid)
+  const brep = useConverterStore((s) => s.brep)
   const name = useConverterStore((s) => s.inputName)
   const converting = useConverterStore((s) => s.converting)
   const error = useConverterStore((s) => s.error)
@@ -33,14 +34,28 @@ export function ExportPanel() {
         ) : report ? (
           <div className="rounded-md border border-line bg-surface-2 p-3">
             <Stat label="Input triangles" value={report.inputTriangles.toLocaleString()} />
-            <Stat label="Output triangles" value={report.outputTriangles.toLocaleString()} />
-            <Stat label="Output vertices" value={report.outputVertices.toLocaleString()} />
+            {report.brepFaces !== undefined ? (
+              <Stat label="STEP faces" value={report.brepFaces.toLocaleString()} />
+            ) : (
+              <Stat label="STEP faces (tris)" value={report.outputTriangles.toLocaleString()} />
+            )}
+            {report.brepEdges !== undefined && (
+              <Stat label="STEP edges" value={report.brepEdges.toLocaleString()} />
+            )}
             <Stat
-              label="Voxel grid"
-              value={`${report.grid.nx}×${report.grid.ny}×${report.grid.nz}`}
+              label="STEP vertices"
+              value={(report.brepVertices ?? report.outputVertices).toLocaleString()}
             />
+            {report.grid && (
+              <Stat label="Voxel grid" value={`${report.grid.nx}×${report.grid.ny}×${report.grid.nz}`} />
+            )}
             <div className="mt-2 flex items-center gap-1.5 border-t border-line-subtle pt-2">
-              {report.watertight ? (
+              {report.faithful ? (
+                <>
+                  <CheckCircle2 className="h-3.5 w-3.5 text-success-500" />
+                  <span className="text-xs text-success-500">Exact — matches original</span>
+                </>
+              ) : report.watertight ? (
                 <>
                   <CheckCircle2 className="h-3.5 w-3.5 text-success-500" />
                   <span className="text-xs text-success-500">Watertight manifold</span>
@@ -52,10 +67,11 @@ export function ExportPanel() {
                 </>
               )}
             </div>
-            {report.openRowFraction > 0.001 && (
-              <p className="mt-1.5 text-2xs leading-4 text-warning-500">
-                Input had open regions ({(report.openRowFraction * 100).toFixed(1)}% of scan rows);
-                the solid was sealed during reconstruction.
+            {report.reconstructed && (
+              <p className="mt-1.5 text-2xs leading-4 text-ink-4">
+                Input was not a clean manifold{report.openRowFraction > 0.001
+                  ? ` (${(report.openRowFraction * 100).toFixed(1)}% open scan rows)`
+                  : ''}; it was voxel-reconstructed and sealed.
               </p>
             )}
           </div>
@@ -70,7 +86,7 @@ export function ExportPanel() {
           variant="primary"
           className="w-full"
           disabled={!solid || converting}
-          onClick={() => solid && downloadSTEP(solid, name)}
+          onClick={() => solid && downloadSTEP(solid, brep, name)}
         >
           <FileBox className="h-4 w-4" />
           Download STEP

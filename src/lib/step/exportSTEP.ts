@@ -92,18 +92,23 @@ function num(n: number): string {
 }
 
 /**
- * Build the STEP text for a single triangle-mesh solid.
+ * A planar face for the B-rep exporter: a set of boundary loops (vertex-index
+ * rings into the shared vertex buffer) lying on one plane, oriented CCW around
+ * `normal` for the first (outer) loop and CW for any subsequent (hole) loops.
  */
-export function exportSTEP(
-  vertices: Float32Array,
-  indices: Uint32Array | null,
-  options: StepExportOptions = {},
-): string {
-  const name = (options.name ?? 'part').replace(/'/g, '')
-  const tol = options.weldTolerance ?? 1e-4
-  const mesh = weldMesh(vertices, indices, tol)
-  const { vertices: V, indices: F } = mesh
+export interface StepFace {
+  normal: [number, number, number]
+  /** loops[0] is the outer bound; loops[1..] are holes. Each is a ring of vertex indices. */
+  loops: number[][]
+}
 
+/**
+ * Shared core: emit a full AP214 solid from a vertex buffer + planar polygonal
+ * faces.  Both the triangle-soup path ({@link exportSTEP}) and the merged
+ * planar path ({@link exportSTEPFromFaces}) funnel through here so the
+ * edge-sharing / closed-shell guarantees are identical.
+ */
+function emitStep(V: Float32Array, faces: StepFace[], name: string, tol: number): string {
   const w = new EntityWriter()
 
   // --- Shared placement/direction primitives -------------------------------
@@ -151,43 +156,46 @@ export function exportSTEP(
     return rec
   }
 
-  // --- Faces: one planar ADVANCED_FACE per triangle ------------------------
-  const faceRefs: number[] = []
-  for (let t = 0; t < F.length; t += 3) {
-    const a = F[t], b = F[t + 1], c = F[t + 2]
-    const ax = V[a * 3], ay = V[a * 3 + 1], az = V[a * 3 + 2]
-    const bx = V[b * 3], by = V[b * 3 + 1], bz = V[b * 3 + 2]
-    const cx = V[c * 3], cy = V[c * 3 + 1], cz = V[c * 3 + 2]
-    // Face normal (Newell/cross); skip if degenerate.
-    let nx = (by - ay) * (cz - az) - (bz - az) * (cy - ay)
-    let ny = (bz - az) * (cx - ax) - (bx - ax) * (cz - az)
-    let nz = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax)
-    const nlen = Math.hypot(nx, ny, nz)
-    if (nlen < 1e-12) continue
-    nx /= nlen; ny /= nlen; nz /= nlen
-    // In-plane reference direction from vertex a toward b.
-    let rx = bx - ax, ry = by - ay, rz = bz - az
-    const rlen = Math.hypot(rx, ry, rz) || 1
-    rx /= rlen; ry /= rlen; rz /= rlen
-
+  // Build one EDGE_LOOP from a ring of vertex indices.
+  const emitLoop = (ring: number[]): number => {
     const oriented: string[] = []
-    for (const [p, q] of [[a, b], [b, c], [c, a]] as const) {
+    for (let i = 0; i < ring.length; i++) {
+      const p = ring[i]
+      const q = ring[(i + 1) % ring.length]
       const edge = getEdge(p, q)
-      // ORIENTED_EDGE sense: .T. when the directed use matches lo→hi.
       const sense = p === edge.lo ? '.T.' : '.F.'
       oriented.push(`#${w.add(`ORIENTED_EDGE('',*,*,#${edge.curve},${sense})`)}`)
     }
-    const loop = w.add(`EDGE_LOOP('',(${oriented.join(',')}))`)
-    const bound = w.add(`FACE_OUTER_BOUND('',#${loop},.T.)`)
+    return w.add(`EDGE_LOOP('',(${oriented.join(',')}))`)
+  }
+
+  // --- Faces: one planar ADVANCED_FACE per merged region -------------------
+  const faceRefs: number[] = []
+  for (const face of faces) {
+    const outer = face.loops[0]
+    if (!outer || outer.length < 3) continue
+    const [nx, ny, nz] = face.normal
+    // In-plane reference direction along the outer loop's first edge.
+    const a = outer[0], b = outer[1]
+    let rx = V[b * 3] - V[a * 3], ry = V[b * 3 + 1] - V[a * 3 + 1], rz = V[b * 3 + 2] - V[a * 3 + 2]
+    const rlen = Math.hypot(rx, ry, rz) || 1
+    rx /= rlen; ry /= rlen; rz /= rlen
+
+    const bounds: string[] = [`#${w.add(`FACE_OUTER_BOUND('',#${emitLoop(outer)},.T.)`)}`]
+    for (let li = 1; li < face.loops.length; li++) {
+      const hole = face.loops[li]
+      if (hole.length < 3) continue
+      bounds.push(`#${w.add(`FACE_BOUND('',#${emitLoop(hole)},.T.)`)}`)
+    }
     const normDir = w.add(`DIRECTION('',(${num(nx)},${num(ny)},${num(nz)}))`)
     const refDir = w.add(`DIRECTION('',(${num(rx)},${num(ry)},${num(rz)}))`)
     const placement = w.add(`AXIS2_PLACEMENT_3D('',#${pointRef[a]},#${normDir},#${refDir})`)
     const plane = w.add(`PLANE('',#${placement})`)
-    faceRefs.push(w.add(`ADVANCED_FACE('',(#${bound}),#${plane},.T.)`))
+    faceRefs.push(w.add(`ADVANCED_FACE('',(${bounds.join(',')}),#${plane},.T.)`))
   }
 
   if (faceRefs.length === 0) {
-    throw new Error('exportSTEP: mesh has no non-degenerate triangles')
+    throw new Error('exportSTEP: mesh has no non-degenerate faces')
   }
 
   const shell = w.add(`CLOSED_SHELL('',(${faceRefs.map(f => `#${f}`).join(',')}))`)
@@ -242,4 +250,54 @@ export function exportSTEP(
   ].join('\n')
 
   return [header, 'DATA;', w.text, 'ENDSEC;', 'END-ISO-10303-21;', ''].join('\n')
+}
+
+/** Newell/cross normal of a triangle; `null` if degenerate. */
+function triNormal(
+  V: Float32Array, a: number, b: number, c: number,
+): [number, number, number] | null {
+  const nx = (V[b * 3 + 1] - V[a * 3 + 1]) * (V[c * 3 + 2] - V[a * 3 + 2]) - (V[b * 3 + 2] - V[a * 3 + 2]) * (V[c * 3 + 1] - V[a * 3 + 1])
+  const ny = (V[b * 3 + 2] - V[a * 3 + 2]) * (V[c * 3] - V[a * 3]) - (V[b * 3] - V[a * 3]) * (V[c * 3 + 2] - V[a * 3 + 2])
+  const nz = (V[b * 3] - V[a * 3]) * (V[c * 3 + 1] - V[a * 3 + 1]) - (V[b * 3 + 1] - V[a * 3 + 1]) * (V[c * 3] - V[a * 3])
+  const len = Math.hypot(nx, ny, nz)
+  if (len < 1e-12) return null
+  return [nx / len, ny / len, nz / len]
+}
+
+/**
+ * Export a triangle-mesh solid to STEP: one planar ADVANCED_FACE per triangle.
+ * Faithful but verbose — use {@link exportSTEPFromFaces} with merged planar
+ * faces for economical output.
+ */
+export function exportSTEP(
+  vertices: Float32Array,
+  indices: Uint32Array | null,
+  options: StepExportOptions = {},
+): string {
+  const name = (options.name ?? 'part').replace(/'/g, '')
+  const tol = options.weldTolerance ?? 1e-4
+  const { vertices: V, indices: F } = weldMesh(vertices, indices, tol)
+  const faces: StepFace[] = []
+  for (let t = 0; t < F.length; t += 3) {
+    const a = F[t], b = F[t + 1], c = F[t + 2]
+    const n = triNormal(V, a, b, c)
+    if (!n) continue
+    faces.push({ normal: n, loops: [[a, b, c]] })
+  }
+  return emitStep(V, faces, name, tol)
+}
+
+/**
+ * Export a pre-built planar B-rep (merged coplanar faces) to STEP.  This is the
+ * economical, topology-faithful path: a box comes out as 6 faces / 12 edges /
+ * 8 vertices instead of a triangle-per-face soup.
+ */
+export function exportSTEPFromFaces(
+  vertices: Float32Array,
+  faces: StepFace[],
+  options: StepExportOptions = {},
+): string {
+  const name = (options.name ?? 'part').replace(/'/g, '')
+  const tol = options.weldTolerance ?? 1e-4
+  return emitStep(vertices, faces, name, tol)
 }

@@ -20,8 +20,8 @@ export function useConversion(): void {
 
     const debounce = window.setTimeout(() => {
       try {
-        const { solid, report } = convertMeshToSolid(input.vertices, input.indices, settings)
-        useConverterStore.getState().setResult(solid, report)
+        const { solid, brep, report } = convertMeshToSolid(input.vertices, input.indices, settings)
+        useConverterStore.getState().setResult(solid, brep, report)
       } catch (err) {
         useConverterStore.getState().setError(
           err instanceof Error ? err.message : 'Conversion failed',
