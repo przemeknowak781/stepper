@@ -69,8 +69,16 @@ src/components/     R3F viewer + control / export panels
 ## Deployment (GitHub Pages)
 
 Pushing to `main` runs `.github/workflows/deploy.yml`, which builds with
-`VITE_BASE=/stepper/` and publishes `dist/` to GitHub Pages (Actions source,
-auto-enabled on first run). The app is fully static — no server needed.
+`VITE_BASE=/stepper/` and publishes `dist/` to GitHub Pages. The app is fully
+static — no server needed.
+
+**One-time setup (repo admin, required once):** open
+**Settings → Pages → Build and deployment → Source** and select
+**GitHub Actions**. The Actions token cannot create the Pages site itself on
+this account (it fails with *"Resource not accessible by integration"* until
+Pages is turned on by hand). After enabling it, re-run the latest
+*Deploy to GitHub Pages* workflow (Actions tab → Run workflow) or push any commit
+to `main`.
 
 Live URL after the first successful deploy:
 **https://przemeknowak781.github.io/stepper/**
