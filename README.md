@@ -65,3 +65,15 @@ src/state/          zustand converter store
 src/hooks/          upload, sample, debounced conversion
 src/components/     R3F viewer + control / export panels
 ```
+
+## Deployment (GitHub Pages)
+
+Pushing to `main` runs `.github/workflows/deploy.yml`, which builds with
+`VITE_BASE=/stepper/` and publishes `dist/` to GitHub Pages (Actions source,
+auto-enabled on first run). The app is fully static — no server needed.
+
+Live URL after the first successful deploy:
+**https://przemeknowak781.github.io/stepper/**
+
+If the repository is ever renamed, update `VITE_BASE` in the workflow (and the
+`base` fallback in `vite.config.ts`) to `/<new-name>/`.
