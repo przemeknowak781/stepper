@@ -1,0 +1,112 @@
+@import '@fontsource-variable/inter/index.css';
+@import '@fontsource-variable/jetbrains-mono/index.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: dark;
+    /* Subtle dotted noise to break up large flat panels — barely visible
+       but keeps gradients from banding on OLED screens. */
+    --grain:
+      radial-gradient(rgba(255,255,255,0.012) 1px, transparent 1px) 0 0 / 3px 3px;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+    margin: 0;
+    background: #08080a;
+    color: rgb(244 244 245);
+    font-family: 'Inter Variable', Inter, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+    font-feature-settings: 'cv11', 'ss01', 'ss02', 'ss03', 'liga', 'calt';
+    font-size: 13.5px;
+    line-height: 20px;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* Headings inherit Inter; numerals tabular for tight columns. */
+  h1, h2, h3, h4 {
+    letter-spacing: -0.015em;
+    font-weight: 600;
+  }
+
+  code, kbd, samp, pre, .font-mono {
+    font-family: 'JetBrains Mono Variable', 'JetBrains Mono', ui-monospace, monospace;
+    font-feature-settings: 'zero', 'ss01';
+  }
+
+  /* Tabular numerals for inputs holding values — keeps panels from
+     jumping as the user edits. */
+  input[type='number'] {
+    font-variant-numeric: tabular-nums;
+    font-family: 'JetBrains Mono Variable', 'JetBrains Mono', ui-monospace, monospace;
+    font-size: 12.5px;
+  }
+
+  /* Accessible focus rings: only on keyboard navigation. */
+  *:focus { outline: none; }
+  *:focus-visible {
+    outline: 2px solid rgb(91 141 239 / 0.55);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+
+  ::selection {
+    background: rgb(91 141 239 / 0.30);
+    color: rgb(244 244 245);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.001ms !important;
+      transition-duration: 0.001ms !important;
+      animation-iteration-count: 1 !important;
+    }
+  }
+}
+
+@layer utilities {
+  .surface-gradient {
+    background-image: linear-gradient(180deg, rgba(255,255,255,0.012), rgba(255,255,255,0));
+  }
+  .surface-noise {
+    background-image: var(--grain);
+  }
+  .text-eyebrow {
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-size: 10px;
+    line-height: 14px;
+    font-weight: 600;
+    color: rgb(113 113 122);
+  }
+  .border-hairline {
+    border-color: rgb(255 255 255 / 0.06);
+  }
+}
+
+/* Slim modern scrollbar */
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 8px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.12);
+  background-clip: padding-box;
+  border: 2px solid transparent;
+}
