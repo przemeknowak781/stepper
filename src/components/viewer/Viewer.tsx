@@ -30,8 +30,12 @@ function useGeometry(
 function SceneContents() {
   const input = useConverterStore((s) => s.input)
   const solid = useConverterStore((s) => s.solid)
+  const brep = useConverterStore((s) => s.brep)
   const showInput = useConverterStore((s) => s.showInput)
   const showSolid = useConverterStore((s) => s.showSolid)
+  // Faceted (flat) shading for planar-face solids (faithful/voxel); smooth
+  // shading only for the marching-cubes organic method (brep === null).
+  const flatShaded = brep !== null
 
   const inputGeom = useGeometry(input?.vertices, input?.indices)
   const solidGeom = useGeometry(solid?.vertices, solid?.indices)
@@ -57,24 +61,34 @@ function SceneContents() {
 
       <group position={[-center[0], -center[1], -center[2]]}>
         {showInput && inputGeom && (
-          <mesh geometry={inputGeom}>
+          // Ghost wireframe of the original. Pulled toward the camera with a
+          // negative polygon offset and depthWrite off so its lines never
+          // z-fight against the (in faithful mode, coincident) solid surface.
+          <mesh geometry={inputGeom} renderOrder={2}>
             <meshBasicMaterial
               color="#5b8def"
               wireframe
               transparent
-              opacity={solid ? 0.18 : 0.6}
+              opacity={solid ? 0.14 : 0.55}
               side={DoubleSide}
+              depthWrite={false}
+              polygonOffset
+              polygonOffsetFactor={-2}
+              polygonOffsetUnits={-2}
             />
           </mesh>
         )}
         {showSolid && solidGeom && (
-          <mesh geometry={solidGeom}>
+          <mesh key={flatShaded ? 'flat' : 'smooth'} geometry={solidGeom} renderOrder={1}>
             <meshStandardMaterial
               color="#c9d3e6"
-              metalness={0.1}
-              roughness={0.55}
+              metalness={0.05}
+              roughness={0.6}
               side={DoubleSide}
-              flatShading={false}
+              flatShading={flatShaded}
+              polygonOffset
+              polygonOffsetFactor={1}
+              polygonOffsetUnits={1}
             />
           </mesh>
         )}

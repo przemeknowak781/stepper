@@ -4,6 +4,8 @@ import { sliceAndVoxelize } from './sliceVoxelize'
 import { occupancyToSolid, taubinSmoothBounded, type SolidMesh } from './slicedSolid'
 import { marchingCubesFromVoxelDensity } from './marchingCubes'
 import { planarizeMesh, type PlanarBrep } from './planarize'
+import { triangulateFace } from './triangulate'
+import { weldMesh } from '../step/exportSTEP'
 
 /**
  * How the input surface is turned into an engineering solid:
@@ -119,8 +121,12 @@ export function convertMeshToSolid(
   if (settings.method === 'faithful') {
     const planar = planarizeMesh(vertices, indices, { angleToleranceDeg: settings.planarToleranceDeg })
     if (planar.manifold && planar.brep) {
-      // Exact: the display solid is the welded input; STEP uses merged faces.
-      const solid = brepToTriangles(planar.brep)
+      // Exact & artifact-free: the display/STL solid is the welded INPUT mesh
+      // itself (no re-triangulation of the merged polygons, which would create
+      // overlapping fan triangles → z-fighting). STEP uses the merged faces.
+      const wtol = Math.max(1e-6, aabbMaxExtent(computeAABB(vertices)) * 1e-6)
+      const welded = weldMesh(vertices, indices, wtol)
+      const solid: SolidMesh = { vertices: welded.vertices, indices: welded.indices }
       return {
         solid,
         brep: planar.brep,
@@ -221,17 +227,16 @@ export function convertMeshToSolid(
 }
 
 /**
- * Fan-triangulate a planar B-rep back into a triangle mesh for display/STL.
- * Each face's outer loop is fanned from its first vertex; holes are ignored for
- * the display mesh (rare in practice and only cosmetic in the viewport).
+ * Triangulate a planar B-rep into a display/STL mesh.  Each face is ear-clipped
+ * in its own plane (handling non-convex outlines and holes) so no overlapping
+ * or flipped triangles are produced — the source of the phantom zero-thickness
+ * walls and z-fighting a naive fan triangulation causes.
  */
 export function brepToTriangles(brep: PlanarBrep): SolidMesh {
   const indices: number[] = []
   for (const face of brep.faces) {
-    const outer = face.loops[0]
-    if (!outer || outer.length < 3) continue
-    for (let i = 1; i + 1 < outer.length; i++) {
-      indices.push(outer[0], outer[i], outer[i + 1])
+    for (const tri of triangulateFace(brep.vertices, face.loops, face.normal)) {
+      indices.push(tri[0], tri[1], tri[2])
     }
   }
   return { vertices: brep.vertices.slice(), indices: Uint32Array.from(indices) }
