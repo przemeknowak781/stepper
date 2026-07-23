@@ -1,11 +1,12 @@
 name: Deploy to GitHub Pages
 
-# Deploys on push to main. The repository's default branch is currently
-# `claude/3d-to-step-converter-7borlp`, and GitHub's auto-created `github-pages`
-# environment only allows deployments from the DEFAULT branch — so that branch
-# is listed too, otherwise the deploy job is rejected before it can run. Once
-# `main` is made the default branch (Settings -> Branches), this can be reduced
-# to `[main]`.
+# Builds on push to either branch; the deploy job only runs on the repository's
+# DEFAULT branch, because GitHub's auto-created `github-pages` environment only
+# permits deployments from the default branch (deploys from any other branch are
+# rejected outright). The default branch is currently
+# `claude/3d-to-step-converter-7borlp`; once `main` is made the default (Settings
+# -> Branches) it will deploy from `main` with no other change, and pushes to the
+# non-default branch stay green (build only, deploy skipped).
 on:
   push:
     branches: [main, claude/3d-to-step-converter-7borlp]
@@ -62,6 +63,9 @@ jobs:
 
   deploy:
     needs: build
+    # Only the default branch can deploy to the github-pages environment; other
+    # branches build and stop here (green), rather than failing on a rejected deploy.
+    if: github.ref_name == github.event.repository.default_branch
     runs-on: ubuntu-latest
     environment:
       name: github-pages
