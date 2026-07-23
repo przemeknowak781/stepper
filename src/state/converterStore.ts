@@ -46,7 +46,9 @@ export const useConverterStore = create<ConverterState>((set) => ({
   report: null,
   converting: false,
   error: null,
-  showInput: true,
+  // Default the original ghost OFF: on dense/complex models its wireframe
+  // buries the converted solid. Users toggle it back on to compare.
+  showInput: false,
   showSolid: true,
   showGrid: true,
 

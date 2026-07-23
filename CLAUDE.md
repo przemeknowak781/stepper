@@ -24,9 +24,19 @@ See `README.md` for the user-facing overview.
   → 129 faces from 516 triangles. Requires a closed 2-manifold input; otherwise
   it auto-falls back to voxel reconstruction, then planarises the repaired shell.
   Knob: `planarToleranceDeg` (coplanar merge angle).
-- **`voxel` / `smooth`** → reconstruction, to *repair* broken meshes:
-  `sliceAndVoxelize` (ported) → `occupancyToSolid` (cuberille, then planarised)
-  or `marchingCubesFromVoxelDensity` + `taubinSmoothBounded`.
+  The faithful path first runs `repairMesh` (`src/lib/geometry/meshRepair.ts`):
+  weld → drop degenerate/duplicate → orient each component consistently and flip
+  it outward by signed volume → ear-clip-fill small boundary holes. If that
+  yields a closed 2-manifold it planarises exactly; otherwise it solidifies.
+- **`voxel` / `smooth`** → robust reconstruction, to *repair* broken meshes.
+  Volume is defined by `solidifyToOccupancy` (`src/lib/geometry/solidify.ts`),
+  NOT the fragile even-odd scanline: dense point-sample the surface into a
+  PADDED grid (`paddedGridFor`, half-voxel-shifted so axis-aligned faces land at
+  voxel centres) → dilate by `seal` to bridge cracks → flood-fill outside from
+  the border → solid = unreached voxels, eroded back by `seal`, then `makeManifold`
+  fills only the diagonal voxel gaps that would make the cuberille non-manifold
+  (flat faces stay flat). Then `occupancyToSolid` (cuberille, planarised) or
+  `marchingCubesFromVoxelDensity` + `taubinSmoothBounded`.
 
 `convertMeshToSolid` returns BOTH a triangulated `solid` (viewport + STL) and a
 polygonal `brep` (economical STEP; null for `smooth`). `isWatertight` (every

@@ -79,10 +79,10 @@ export function ControlsPanel() {
 
         <p className="text-2xs leading-4 text-ink-4">
           {settings.method === 'faithful'
-            ? 'Merges coplanar faces into an exact, economical solid. Broken meshes are auto-repaired first.'
+            ? 'Repairs the mesh to a manifold (weld, re-orient, fill holes) and merges coplanar faces — exact & economical. Falls back to solidify if unrepairable.'
             : settings.method === 'voxel'
-              ? 'Rebuilds any mesh into a watertight blocky solid, then merges flat faces.'
-              : 'Rebuilds a smooth rounded surface (fine triangle mesh in STEP).'}
+              ? 'Robustly solidifies any mesh (flood-fill volume, immune to holes/flipped normals), then merges flat faces.'
+              : 'Solidifies then rebuilds a smooth rounded surface (fine triangle mesh in STEP).'}
         </p>
 
         {(settings.method === 'faithful' || settings.method === 'voxel') && (
@@ -116,6 +116,16 @@ export function ControlsPanel() {
                 step={1}
                 value={settings.slices}
                 onChange={(e) => update({ slices: Number(e.target.value) })}
+              />
+            </Row>
+
+            <Row label="Crack seal" value={`${settings.seal} vx`}>
+              <Slider
+                min={0}
+                max={3}
+                step={1}
+                value={settings.seal}
+                onChange={(e) => update({ seal: Number(e.target.value) })}
               />
             </Row>
           </>

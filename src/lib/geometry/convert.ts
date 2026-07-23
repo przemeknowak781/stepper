@@ -1,62 +1,55 @@
 import { computeAABB, aabbMaxExtent, type AABB } from './boundingBox'
-import { computeGridFromVertices, type GridMeta, type SliceAxis } from './sliceFrame'
-import { sliceAndVoxelize } from './sliceVoxelize'
+import { type GridMeta, type SliceAxis } from './sliceFrame'
 import { occupancyToSolid, taubinSmoothBounded, type SolidMesh } from './slicedSolid'
 import { marchingCubesFromVoxelDensity } from './marchingCubes'
 import { planarizeMesh, type PlanarBrep } from './planarize'
 import { triangulateFace } from './triangulate'
-import { weldMesh } from '../step/exportSTEP'
+import { repairMesh, type RepairReport } from './meshRepair'
+import { solidifyToOccupancy, paddedGridFor } from './solidify'
 
 /**
  * How the input surface is turned into an engineering solid:
  *
- * - `faithful` — merge the input's coplanar triangles into large planar faces
- *                (mesh → B-rep) with NO resampling.  A box stays an exact box
- *                of 6 faces; the STEP is economical and bit-identical to the
- *                input.  Needs a clean closed manifold; a torn input auto-falls
- *                back to `voxel` reconstruction first, then planarises.
- * - `voxel`    — reconstruct via the voxel slicer (repairs any input), then
- *                planarise the cuberille shell so the axis-aligned faces merge
- *                into a few big rectangles.  Blocky but watertight & economical.
- * - `smooth`   — marching-cubes iso-surface + feature-preserving Taubin
- *                smoothing.  Rounded, organic; STEP is a fine triangle mesh
- *                (no planar merging possible on a curved surface).
+ * - `faithful` — repair the input to a clean closed manifold (weld, dedup,
+ *                consistent orientation, small-hole fill) and merge its coplanar
+ *                triangles into large planar faces. No resampling: exact,
+ *                economical. If it can't be made manifold, it auto-solidifies
+ *                (below) and planarises that.
+ * - `voxel`    — robust solidification of ANY mesh (surface voxelisation +
+ *                flood-fill inside/outside, immune to holes/flipped normals),
+ *                cuberille shell, then planarised.
+ * - `smooth`   — solidify, then a marching-cubes iso-surface + Taubin smoothing.
  */
 export type ConvertMethod = 'faithful' | 'voxel' | 'smooth'
 
 export interface ConvertSettings {
   method: ConvertMethod
-  /** Slicing axis for the voxel grid (voxel/smooth, and faithful's repair fallback). */
   axis: SliceAxis
-  /** In-plane grid density for reconstruction methods. */
   resolution: number
-  /** Number of layers along the slicing axis for reconstruction methods. */
   slices: number
-  /** Taubin smoothing iterations (smooth method only). */
   smoothIterations: number
-  /**
-   * Coplanar-merge angle tolerance (degrees) for faithful/voxel planarisation.
-   * Small = faithful (a chamfer stays its own face); larger merges gently
-   * curved regions into fewer planar faces.
-   */
   planarToleranceDeg: number
+  /**
+   * Crack-sealing radius (voxels) for solidification: bridges holes up to this
+   * many voxels wide so the flood fill can't leak into a hollow model. 0 = off.
+   */
+  seal: number
 }
 
 export const DEFAULT_CONVERT_SETTINGS: ConvertSettings = {
   method: 'faithful',
   axis: 'z',
-  resolution: 48,
-  slices: 48,
+  resolution: 64,
+  slices: 64,
   smoothIterations: 8,
   planarToleranceDeg: 1,
+  seal: 1,
 }
 
 export interface ConvertReport {
   inputTriangles: number
-  /** Triangles in the display/STL solid. */
   outputTriangles: number
   outputVertices: number
-  /** Planar B-rep face count for STEP (undefined when STEP falls back to triangles). */
   brepFaces?: number
   brepEdges?: number
   brepVertices?: number
@@ -64,17 +57,15 @@ export interface ConvertReport {
   grid?: { nx: number; ny: number; nz: number }
   openRowFraction: number
   watertight: boolean
-  /** True when the output geometry equals the input surface exactly (faithful path). */
   faithful: boolean
-  /** True when the input had to be voxel-reconstructed (not manifold). */
   reconstructed: boolean
+  /** Manifold-repair stats when the faithful path ran (undefined for pure voxel/smooth). */
+  repair?: RepairReport
   aabb: AABB
 }
 
 export interface ConvertResult {
-  /** Triangulated solid for the viewport + STL export. */
   solid: SolidMesh
-  /** Economical planar B-rep for STEP export (null → STEP uses `solid` triangles). */
   brep: PlanarBrep | null
   report: ConvertReport
 }
@@ -85,31 +76,20 @@ function occupancyToField(occupancy: Uint8Array): Float32Array {
   return field
 }
 
-/** Voxel-reconstruct an arbitrary (possibly broken) mesh into a watertight cuberille solid. */
-function voxelReconstruct(
+/** Robustly voxel-solidify a mesh into a watertight cuberille solid. */
+function solidReconstruct(
   vertices: Float32Array,
   indices: Uint32Array | null,
   settings: ConvertSettings,
-): { solid: SolidMesh; grid: GridMeta; occupiedVoxels: number; openRowFraction: number } {
-  const grid = computeGridFromVertices(vertices, settings.axis, settings.slices, settings.resolution)
-  const vox = sliceAndVoxelize(vertices, indices, grid)
-  return {
-    solid: occupancyToSolid(vox.occupancy, grid),
-    grid,
-    occupiedVoxels: vox.occupiedVoxels,
-    openRowFraction: vox.openRowFraction,
-  }
+): { solid: SolidMesh; grid: GridMeta; occupiedVoxels: number } {
+  const grid = paddedGridFor(vertices, settings.axis, settings.slices, settings.resolution)
+  const { occupancy, occupiedVoxels } = solidifyToOccupancy(vertices, indices, grid, settings.seal)
+  return { solid: occupancyToSolid(occupancy, grid), grid, occupiedVoxels }
 }
 
 /**
  * Convert an arbitrary input triangle mesh into a clean engineering solid plus
  * an economical planar B-rep for STEP.
- *
- * The default `faithful` path is reconstruction-free: it merges the input's
- * coplanar triangles into big planar faces, so a simple mesh yields a simple,
- * exact solid (a box → 6 faces) rather than the heavy blob a pure voxel remesh
- * produces.  Only when the input is not a clean closed manifold do we fall back
- * to voxel reconstruction to seal it, then planarise that.
  */
 export function convertMeshToSolid(
   vertices: Float32Array,
@@ -119,89 +99,54 @@ export function convertMeshToSolid(
   const inputTriangles = indices ? indices.length / 3 : vertices.length / 9
 
   if (settings.method === 'faithful') {
-    const planar = planarizeMesh(vertices, indices, { angleToleranceDeg: settings.planarToleranceDeg })
-    if (planar.manifold && planar.brep) {
-      // Exact & artifact-free: the display/STL solid is the welded INPUT mesh
-      // itself (no re-triangulation of the merged polygons, which would create
-      // overlapping fan triangles → z-fighting). STEP uses the merged faces.
-      const wtol = Math.max(1e-6, aabbMaxExtent(computeAABB(vertices)) * 1e-6)
-      const welded = weldMesh(vertices, indices, wtol)
-      const solid: SolidMesh = { vertices: welded.vertices, indices: welded.indices }
-      return {
-        solid,
-        brep: planar.brep,
-        report: {
-          inputTriangles,
-          outputTriangles: solid.indices.length / 3,
-          outputVertices: solid.vertices.length / 3,
-          brepFaces: planar.faceCount,
-          brepEdges: planar.edgeCount,
-          brepVertices: planar.vertexCount,
-          occupiedVoxels: 0,
-          openRowFraction: 0,
-          watertight: true,
-          faithful: true,
-          reconstructed: false,
-          aabb: computeAABB(solid.vertices),
-        },
+    const repaired = repairMesh(vertices, indices)
+    if (repaired.report.closed) {
+      const planar = planarizeMesh(repaired.vertices, repaired.indices, {
+        angleToleranceDeg: settings.planarToleranceDeg,
+      })
+      if (planar.manifold && planar.brep) {
+        const solid: SolidMesh = { vertices: repaired.vertices, indices: repaired.indices }
+        return {
+          solid,
+          brep: planar.brep,
+          report: {
+            inputTriangles,
+            outputTriangles: solid.indices.length / 3,
+            outputVertices: solid.vertices.length / 3,
+            brepFaces: planar.faceCount,
+            brepEdges: planar.edgeCount,
+            brepVertices: planar.vertexCount,
+            occupiedVoxels: 0,
+            openRowFraction: 0,
+            watertight: true,
+            faithful: true,
+            reconstructed: false,
+            repair: repaired.report,
+            aabb: computeAABB(solid.vertices),
+          },
+        }
       }
     }
-    // Not a clean manifold → reconstruct, then planarise the repaired shell.
-    const rec = voxelReconstruct(vertices, indices, settings)
+    // Could not repair to a manifold → robust solidify, then planarise.
+    const rec = solidReconstruct(vertices, indices, settings)
     const planarRec = planarizeMesh(rec.solid.vertices, rec.solid.indices, {
       angleToleranceDeg: settings.planarToleranceDeg,
     })
-    return {
-      solid: rec.solid,
-      brep: planarRec.brep,
-      report: {
-        inputTriangles,
-        outputTriangles: rec.solid.indices.length / 3,
-        outputVertices: rec.solid.vertices.length / 3,
-        brepFaces: planarRec.faceCount || undefined,
-        brepEdges: planarRec.edgeCount || undefined,
-        brepVertices: planarRec.vertexCount || undefined,
-        occupiedVoxels: rec.occupiedVoxels,
-        grid: { nx: rec.grid.nx, ny: rec.grid.ny, nz: rec.grid.nz },
-        openRowFraction: rec.openRowFraction,
-        watertight: isWatertight(rec.solid.indices),
-        faithful: false,
-        reconstructed: true,
-        aabb: computeAABB(rec.solid.vertices),
-      },
-    }
+    return reconstructedResult(inputTriangles, rec, planarRec, repaired.report)
   }
 
   if (settings.method === 'voxel') {
-    const rec = voxelReconstruct(vertices, indices, settings)
+    const rec = solidReconstruct(vertices, indices, settings)
     const planarRec = planarizeMesh(rec.solid.vertices, rec.solid.indices, {
       angleToleranceDeg: settings.planarToleranceDeg,
     })
-    return {
-      solid: rec.solid,
-      brep: planarRec.brep,
-      report: {
-        inputTriangles,
-        outputTriangles: rec.solid.indices.length / 3,
-        outputVertices: rec.solid.vertices.length / 3,
-        brepFaces: planarRec.faceCount || undefined,
-        brepEdges: planarRec.edgeCount || undefined,
-        brepVertices: planarRec.vertexCount || undefined,
-        occupiedVoxels: rec.occupiedVoxels,
-        grid: { nx: rec.grid.nx, ny: rec.grid.ny, nz: rec.grid.nz },
-        openRowFraction: rec.openRowFraction,
-        watertight: isWatertight(rec.solid.indices),
-        faithful: false,
-        reconstructed: true,
-        aabb: computeAABB(rec.solid.vertices),
-      },
-    }
+    return reconstructedResult(inputTriangles, rec, planarRec)
   }
 
   // smooth
-  const grid = computeGridFromVertices(vertices, settings.axis, settings.slices, settings.resolution)
-  const vox = sliceAndVoxelize(vertices, indices, grid)
-  const field = occupancyToField(vox.occupancy)
+  const grid = paddedGridFor(vertices, settings.axis, settings.slices, settings.resolution)
+  const { occupancy, occupiedVoxels } = solidifyToOccupancy(vertices, indices, grid, settings.seal)
+  const field = occupancyToField(occupancy)
   const mc = marchingCubesFromVoxelDensity(field, grid, 0.5)
   const smoothed =
     settings.smoothIterations > 0
@@ -215,9 +160,9 @@ export function convertMeshToSolid(
       inputTriangles,
       outputTriangles: solid.indices.length / 3,
       outputVertices: solid.vertices.length / 3,
-      occupiedVoxels: vox.occupiedVoxels,
+      occupiedVoxels,
       grid: { nx: grid.nx, ny: grid.ny, nz: grid.nz },
-      openRowFraction: vox.openRowFraction,
+      openRowFraction: 0,
       watertight: isWatertight(solid.indices),
       faithful: false,
       reconstructed: true,
@@ -226,11 +171,37 @@ export function convertMeshToSolid(
   }
 }
 
+function reconstructedResult(
+  inputTriangles: number,
+  rec: { solid: SolidMesh; grid: GridMeta; occupiedVoxels: number },
+  planarRec: ReturnType<typeof planarizeMesh>,
+  repair?: RepairReport,
+): ConvertResult {
+  return {
+    solid: rec.solid,
+    brep: planarRec.brep,
+    report: {
+      inputTriangles,
+      outputTriangles: rec.solid.indices.length / 3,
+      outputVertices: rec.solid.vertices.length / 3,
+      brepFaces: planarRec.faceCount || undefined,
+      brepEdges: planarRec.edgeCount || undefined,
+      brepVertices: planarRec.vertexCount || undefined,
+      occupiedVoxels: rec.occupiedVoxels,
+      grid: { nx: rec.grid.nx, ny: rec.grid.ny, nz: rec.grid.nz },
+      openRowFraction: 0,
+      watertight: isWatertight(rec.solid.indices),
+      faithful: false,
+      reconstructed: true,
+      repair,
+      aabb: computeAABB(rec.solid.vertices),
+    },
+  }
+}
+
 /**
- * Triangulate a planar B-rep into a display/STL mesh.  Each face is ear-clipped
- * in its own plane (handling non-convex outlines and holes) so no overlapping
- * or flipped triangles are produced — the source of the phantom zero-thickness
- * walls and z-fighting a naive fan triangulation causes.
+ * Triangulate a planar B-rep into a display/STL mesh via per-face ear clipping
+ * (handles non-convex outlines and holes) — no overlapping/flipped triangles.
  */
 export function brepToTriangles(brep: PlanarBrep): SolidMesh {
   const indices: number[] = []

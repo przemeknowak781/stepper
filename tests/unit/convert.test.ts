@@ -19,17 +19,17 @@ describe('convertMeshToSolid', () => {
     expect(solid.indices.length / 3).toBe(12)
   })
 
-  it('faithful: a torn cube auto-falls back to voxel reconstruction', () => {
+  it('faithful: a torn cube is REPAIRED (hole filled) back to an exact 6-face box', () => {
     const full = cubeSoup(20)
-    const torn = full.slice(0, full.length - 9) // drop a face → not manifold
+    const torn = full.slice(0, full.length - 9) // drop a face → open hole
     const { report } = convertMeshToSolid(torn, null, {
       ...DEFAULT_CONVERT_SETTINGS,
       method: 'faithful',
-      resolution: 24,
-      slices: 24,
     })
-    expect(report.reconstructed).toBe(true)
-    expect(report.watertight).toBe(true)
+    expect(report.faithful).toBe(true)
+    expect(report.reconstructed).toBe(false)
+    expect(report.brepFaces).toBe(6)
+    expect(report.repair?.filledHoles).toBeGreaterThanOrEqual(1)
   })
 
   it('produces a watertight solid from a clean cube (voxel method)', () => {
@@ -39,6 +39,7 @@ describe('convertMeshToSolid', () => {
       method: 'voxel',
       resolution: 24,
       slices: 24,
+      seal: 0,
     })
     expect(report.outputTriangles).toBeGreaterThan(0)
     expect(report.watertight).toBe(true)
