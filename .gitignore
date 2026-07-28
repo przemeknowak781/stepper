@@ -3,3 +3,10 @@ dist
 *.local
 .DS_Store
 tsconfig.tsbuildinfo
+
+# meshfix (Python tool)
+tools/meshfix/.venv/
+tools/meshfix/**/__pycache__/
+tools/meshfix/.pytest_cache/
+tools/meshfix/tests/fixtures/data/
+tools/meshfix/*.egg-info/
