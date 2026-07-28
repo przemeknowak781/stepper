@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import numpy as np
 import trimesh
-from scipy.spatial import cKDTree
+from .nputil import NearestPoints
 
 DEFAULT_SAMPLES = 50_000
 
@@ -58,19 +58,17 @@ def surface_samples(mesh: trimesh.Trimesh, count: int, rng: np.random.Generator)
     return np.vstack([points, vertices])
 
 
-def directed_hausdorff(source: np.ndarray, target_tree: cKDTree) -> float:
+def directed_hausdorff(source: np.ndarray, target_tree: NearestPoints) -> float:
     """Largest distance from any source point to the nearest target point."""
     if len(source) == 0:
         return 0.0
-    distances, _ = target_tree.query(source, k=1, workers=-1)
-    return float(np.max(distances))
+    return float(np.max(target_tree.query(source)))
 
 
-def mean_distance(source: np.ndarray, target_tree: cKDTree) -> float:
+def mean_distance(source: np.ndarray, target_tree: NearestPoints) -> float:
     if len(source) == 0:
         return 0.0
-    distances, _ = target_tree.query(source, k=1, workers=-1)
-    return float(np.mean(distances))
+    return float(np.mean(target_tree.query(source)))
 
 
 def compare(
@@ -89,8 +87,8 @@ def compare(
     ref_points = surface_samples(reference, samples, rng_in)
     cand_points = surface_samples(candidate, samples, rng_out)
 
-    ref_tree = cKDTree(ref_points)
-    cand_tree = cKDTree(cand_points)
+    ref_tree = NearestPoints(ref_points)
+    cand_tree = NearestPoints(cand_points)
 
     in_to_out = directed_hausdorff(ref_points, cand_tree)
     out_to_in = directed_hausdorff(cand_points, ref_tree)

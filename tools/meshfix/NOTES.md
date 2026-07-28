@@ -20,28 +20,38 @@ phase), then Möller's triangle-triangle overlap test with a coplanar SAT
 fallback (narrow phase). Pairs sharing a vertex are excluded, because adjacent
 triangles always touch along their shared edge and that is not a defect.
 
-### Known performance gap — does NOT yet meet the stated budget
+### Performance budget — now met (was a stated gap)
 
-SPEC 13.1 sets a budget of "under 30 s for `ai_like_blob` at 500k triangles".
-Measured on the current fixtures:
+SPEC 13.1 sets a budget of "under 30 s at 500k triangles". The first version
+ran one Python-level Möller call per candidate pair and extrapolated to about
+**3 minutes**, roughly 6× over. That gap is closed; the routine moved to
+`meshfix/selfintersect.py` and gained a vectorised rejection stage.
 
-| fixture | faces | time |
-|---|---|---|
-| `ai_like_blob` | 1 549 | 0.5 s |
-| `selfintersect_torus` | 3 072 | 1.1 s |
+Candidate pairs are now built with fully vectorised bucket insertion (spans
+decoded via `repeat`/`cumsum` rather than a triple loop per face), deduplicated
+by packing each pair into one int64 — `np.unique(axis=0)` does a lexicographic
+row sort and dominated the profile — and then filtered by four numpy stages
+before any Python runs: shared-vertex adjacency, bounding-box overlap, and each
+triangle straddling the other's plane.
 
-Scaling is roughly linear in candidate pairs, so 500k faces extrapolates to
-**~3 minutes**, i.e. about 6× over budget. This is stated rather than hidden.
-The narrow phase currently runs one Python-level call per candidate pair.
+Measured after the change:
 
-Planned mitigation, in order:
-1. Vectorise the plane-sign early-outs across all candidate pairs in numpy;
-   this rejects the large majority of pairs before any Python loop runs.
-2. Delegate to PyMeshLab's self-intersection selection when it *is* installed,
-   keeping the in-house path as the dependency-free fallback.
+| mesh | faces | time | rate |
+|---|---|---|---|
+| `ai_like_blob` | 1 549 | 0.07 s | (was 0.5 s) |
+| noisy sphere | 81 920 | 3.2 s | 26k faces/s |
+| noisy sphere | 327 680 | 15.3 s | 21k faces/s |
+| two noisy spheres | **655 360** | **33.7 s** | 19.4k faces/s |
 
-Until one of those lands, `analyze(..., check_selfintersection=False)` exists
-so callers that do not need A5 are not forced to pay for it.
+655k faces in 33.7 s is 19.4k faces/s, so 500k lands at **~26 s — inside the
+30 s budget**. Results are unchanged on every fixture (324, 106, 12 and 0
+intersecting faces respectively), which is what the tests pin.
+
+A caveat on benchmark honesty: an earlier measurement showed severe superlinear
+decay (4k faces/s at 327k). It used noise *larger than the triangles*, which
+turns the mesh into a dense tangle where the pair count really is quadratic.
+The table above perturbs vertices by 30% of mean edge length, which is what a
+scan or generative model actually produces.
 
 ---
 
@@ -251,3 +261,91 @@ It is declared under the `dev` extra, never imported by library code, and the
 package works without it. The alternative was hand-triangulating a U-shaped
 prism inside a test, which would put a second, untested ear-clipping
 implementation into the repository to avoid a well-maintained wheel.
+
+
+---
+
+## 8. Running in the browser via Pyodide
+
+Verified rather than assumed: the whole package runs **unmodified** under
+Pyodide (CPython compiled to WebAssembly), including file I/O on its in-memory
+filesystem and the full backend orchestration.
+
+`trimesh` ships zero C extensions, so `micropip.install("trimesh")` works
+straight from PyPI; numpy is a first-class Pyodide package.
+
+### Measured, CPython 3.11 (x86) against Pyodide 0.28 (wasm)
+
+| | CPython | Pyodide |
+|---|---|---|
+| `analyze(ai_like_blob)` | 0.48 s — `selfX=106 nmV=6` | 0.91 s — identical |
+| voxel repair | 0.94 s — 60 112 faces | 1.59 s — identical |
+| two-sided Hausdorff | 0.309286247785344 | 0.3093 (agrees to shown precision) |
+| full `run_chain` on MEMFS | — | accepted, watertight, 0 non-manifold |
+
+So roughly **1.8× slower** on the vectorised paths, which is fine, and the
+topological results are identical.
+
+**Determinism caveat.** Agreement was checked to displayed precision and on
+exact face counts, *not* bit-for-bit. Change C7 already limits the determinism
+guarantee to a fixed build, and wasm is a different build; no stronger claim is
+made.
+
+### Payload, and why scipy had to go
+
+| component | size |
+|---|---|
+| `pyodide.asm.wasm` | 9.2 MB |
+| `python_stdlib.zip` | 2.4 MB |
+| numpy | 2.8 MB |
+| **scipy** | **13.4 MB (48%)** |
+| micropip + trimesh | ~1.7 MB |
+| **total** | **~28 MB** uncompressed |
+
+scipy alone was nearly half the download for what turned out to be *three*
+features. `meshfix/nputil.py` replaces them in numpy — 6-connected dilation/erosion, a sweep-based flood fill
+standing in for `label` plus border selection, and an exact nearest-neighbour
+query standing in for `cKDTree`. scipy stays a **test** dependency so
+`tests/test_nputil.py` can assert equivalence.
+
+**A third, hidden dependency surfaced only by testing.** Blocking `scipy` at
+the import hook — the honest way to check the claim — revealed that
+`trimesh.graph.connected_components` raises "no graph engines available!"
+unless SciPy or NetworkX is importable. Component counting is part of criterion
+A7, so SciPy would have come back through the side door and undone the whole
+saving. `connected_component_labels` now does it with hooking plus pointer
+jumping: about log(n) fully vectorised rounds, verified against trimesh's own
+answer where SciPy *is* present.
+
+One trace remains and is harmless: `trimesh.geometry.weighted_vertex_normals`
+attempts `scipy.sparse`, logs a traceback, and falls back to its dense path.
+Only `postprocess.thicken_shell` touches it, and the result is correct.
+
+Two bugs found while writing the replacements, both worth recording:
+
+1. **Cell size must respect effective dimensionality.** Sizing the
+   nearest-neighbour hash from bounding-box *volume* collapses to near zero for
+   surface samples, which are a 2D sheet in 3D — and surface samples are the
+   entire use case. The search then expanded over enormous radii and the test
+   suite stopped terminating. `_characteristic_spacing` now uses only the
+   extents that carry real variation and takes the d-th root over those.
+2. **The shell-termination bound was off by one.** Having searched Chebyshev
+   radius R, nothing unsearched can be nearer than `R*cell`, not
+   `(R-1)*cell`; the conservative version never resolved anything at R=1 and
+   searched far more shells than necessary.
+
+`NearestPoints` is 8–12× slower than `cKDTree` (0.4–0.75 s for 50k×50k, versus
+0.05 s) but exact, which is what A8 requires. Dropping 13.4 MB is worth it.
+
+Without scipy the browser payload is **~15 MB** uncompressed, and the wasm
+compresses well with brotli.
+
+### Still to do before this ships in Stepper
+
+Loading Pyodide must be lazy and confined to a worker, so the app stays instant
+for users who never ask for repair. The sibling Optimizer repo already solves
+the Vite integration — `worker: { format: 'es' }` because Pyodide needs
+code-splitting, and `optimizeDeps: { exclude: ['pyodide'] }` because esbuild's
+pre-bundler relocates `pyodide.mjs` but not the sibling assets it loads by
+relative import, which then 404. Reuse those settings rather than rediscovering
+them.

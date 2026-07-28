@@ -1,6 +1,6 @@
 # SPEC: `meshfix` — deterministyczna naprawa siatek pod druk 3D
 
-Wersja specyfikacji: **1.2**
+Wersja specyfikacji: **1.3**
 Odbiorca: agent kodujący (Claude Code lub równoważny)
 Język implementacji: Python 3.11+, z jednym opcjonalnym komponentem C++
 
@@ -488,9 +488,13 @@ Minimum 85% na `validate.py`, `metrics.py`, `diagnose.py`. Na wrapperach backend
 
 ## 12. Zależności
 
-Twarde: `trimesh`, `numpy`, `scipy`, `rtree` lub `embreex` (przyspieszenie ray castingu), `typer`, `pytest`.
+Twarde: `trimesh`, `numpy`, `typer`.
 
-Miękkie, wykrywane w runtime: `pymeshlab`, `pyopenvdb`, binarka `blender`, binarka `aw3`, binarka `FloatTetwild_bin`.
+Testowe: `pytest`, `scipy` (wzorzec odniesienia dla zamienników numpy), `manifold3d` (budowa fixture'u), `rtree`.
+
+Miękkie, wykrywane w runtime: `pymeshlab`, `embreex` (szybszy ray casting), binarka `aw3`, binarka `FloatTetwild_bin`.
+
+**scipy przeniesiony z twardych do testowych w 1.3.** Był używany w dwóch miejscach (`ndimage` w backendzie voxel, `spatial.cKDTree` w metrykach), a stanowi 13,4 MB z ~28 MB payloadu Pyodide. `meshfix.nputil` zastępuje obie rzeczy w numpy, a `tests/test_nputil.py` weryfikuje równoważność wobec scipy — zamiana jest sprawdzona, nie założona.
 
 Przypnij wersje w `pyproject.toml`. PyMeshLab łamie kompatybilność nazw filtrów między wydaniami, więc zakres wersji ma być wąski i jawny. **PyMeshLab przeniesiony do zależności miękkich** względem 1.0: jest potrzebny wyłącznie backendowi `poisson` (M6) i opcjonalnej implementacji testu samoprzecięć, więc rdzeń nie może się od niego uzależniać.
 
@@ -504,7 +508,7 @@ Każda funkcja próbkująca przyjmuje `rng: numpy.random.Generator` skonstruowan
 
 Rozstrzygnij i **udokumentuj w `NOTES.md`**, nie pytaj:
 
-1. Czy własna implementacja testu samoprzecięć na AABB, czy delegacja do PyMeshLab. Kryterium: czas na `ai_like_blob` przy 500k trójkątów poniżej 30 sekund. Uwaga: PyMeshLab jest zależnością miękką (§12), więc rdzeń musi mieć działającą ścieżkę bez niego.
+1. ~~Czy własna implementacja testu samoprzecięć na AABB, czy delegacja do PyMeshLab.~~ **Rozstrzygnięte: własna** (`meshfix/selfintersect.py`), bo PyMeshLab jest zależnością miękką, a A5 jest kryterium twardym — twarde kryterium nie może zależeć od pakietu opcjonalnego. Budżet **spełniony**: zmierzone 655 360 ścian w 33,7 s (19,4 tys. ścian/s), co dla 500k daje ~26 s wobec limitu 30 s.
 2. Czy Hausdorff liczyć przez PyMeshLab, czy przez próbkowanie plus `scipy.spatial.cKDTree`. Drugie jest szybsze i wystarczające, ale to estymator, więc musi być oznaczony `hausdorff_approximate: true` w raporcie.
 3. Progi w regułach `severe` (§5.1) i `shell` (§5.3) są wstępne. Skalibruj je na fixtures i zaktualizuj tę specyfikację.
 

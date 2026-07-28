@@ -1,6 +1,6 @@
 """Native voxel solidification backend (SPEC 7.3).
 
-Implemented directly on numpy and ``scipy.ndimage`` rather than through
+Implemented directly on numpy (see :mod:`meshfix.nputil`) rather than through
 OpenVDB or headless Blender. The algorithm is small, the two libraries are
 already hard dependencies, and shelling out to Blender costs seconds of
 start-up and makes byte-identical output depend on a version we do not pin.
@@ -31,9 +31,8 @@ from pathlib import Path
 
 import numpy as np
 import trimesh
-from scipy import ndimage
-
 from ..io import load_mesh, save_mesh
+from ..nputil import binary_dilation, binary_erosion, flood_from_border
 from . import BackendResult, RunContext
 
 #: Empty border kept around the model so the outside flood always has a seed.
@@ -184,25 +183,14 @@ def solidify(
     grid = build_grid(mesh, spacing)
     surface = rasterise_surface(mesh, grid)
 
-    sealed = ndimage.binary_dilation(surface, iterations=seal) if seal > 0 else surface
+    sealed = binary_dilation(surface, iterations=seal) if seal > 0 else surface
 
-    # Label the empty space; every region touching the border is outside.
-    labels, count = ndimage.label(~sealed)
-    outside = np.zeros(labels.shape, dtype=bool)
-    if count:
-        border = np.unique(
-            np.concatenate([
-                labels[0, :, :].ravel(), labels[-1, :, :].ravel(),
-                labels[:, 0, :].ravel(), labels[:, -1, :].ravel(),
-                labels[:, :, 0].ravel(), labels[:, :, -1].ravel(),
-            ])
-        )
-        border = border[border != 0]
-        outside = np.isin(labels, border)
+    # Everything the outside can reach through empty space is exterior.
+    outside = flood_from_border(~sealed)
 
     solid = ~outside
     if seal > 0:
-        solid = ndimage.binary_erosion(solid, iterations=seal, border_value=0)
+        solid = binary_erosion(solid, iterations=seal)
     make_manifold(solid)
     if log is not None:
         log.debug("solidify: shape=%s occupied=%d", grid.shape, int(solid.sum()))

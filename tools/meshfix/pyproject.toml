@@ -9,7 +9,6 @@ description = "Deterministic mesh repair for 3D printing, with quantified fideli
 requires-python = ">=3.11"
 dependencies = [
     "numpy>=2,<3",
-    "scipy>=1.11,<2",
     "trimesh>=4.5,<5",
     "typer>=0.12,<1",
 ]
@@ -19,7 +18,9 @@ dependencies = [
 [project.optional-dependencies]
 poisson = ["pymeshlab>=2023.12,<2024"]
 fast-rays = ["embreex>=2.17"]
-dev = ["pytest>=8,<9", "pytest-cov>=5", "rtree>=1.2", "manifold3d>=2.5"]
+# scipy is a TEST dependency only: tests/test_nputil.py checks the numpy
+# replacements against it. Shipping it would double the Pyodide payload.
+dev = ["pytest>=8,<9", "pytest-cov>=5", "rtree>=1.2", "manifold3d>=2.5", "scipy>=1.11,<2"]
 
 [project.scripts]
 meshfix = "meshfix.cli:main"
