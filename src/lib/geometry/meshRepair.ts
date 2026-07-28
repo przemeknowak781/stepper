@@ -80,18 +80,25 @@ export function repairMesh(
   const V = Float32Array.from(verts)
 
   // --- Drop duplicate triangles (same vertex set) ------------------------
+  // Compacted IN PLACE: `tris.push(...kept)` would spread hundreds of
+  // thousands of arguments onto the call stack and blow it up on real models.
   let removedDuplicate = 0
   {
     const seen = new Set<string>()
-    const kept: number[] = []
+    let out = 0
     for (let t = 0; t < tris.length; t += 3) {
-      const s = [tris[t], tris[t + 1], tris[t + 2]].sort((x, y) => x - y).join('_')
+      const a = tris[t], b = tris[t + 1], c = tris[t + 2]
+      // Order-independent key without allocating/sorting an array per triangle.
+      const lo = a < b ? (a < c ? a : c) : (b < c ? b : c)
+      const hi = a > b ? (a > c ? a : c) : (b > c ? b : c)
+      const mid = a + b + c - lo - hi
+      const s = `${lo}_${mid}_${hi}`
       if (seen.has(s)) { removedDuplicate++; continue }
       seen.add(s)
-      kept.push(tris[t], tris[t + 1], tris[t + 2])
+      tris[out] = a; tris[out + 1] = b; tris[out + 2] = c
+      out += 3
     }
-    tris.length = 0
-    tris.push(...kept)
+    tris.length = out
   }
 
   // --- Consistent orientation per connected component --------------------

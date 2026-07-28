@@ -36,25 +36,21 @@ function splitTopLevel(s: string): string[] {
   const out: string[] = []
   let depth = 0
   let inStr = false
-  let cur = ''
+  let start = 0
   for (let i = 0; i < s.length; i++) {
     const c = s[i]
     if (inStr) {
-      cur += c
-      if (c === "'") {
-        // '' is an escaped quote inside a string.
-        if (s[i + 1] === "'") { cur += "'"; i++ }
-        else inStr = false
-      }
+      // '' is an escaped quote inside a string.
+      if (c === "'") { if (s[i + 1] === "'") i++; else inStr = false }
       continue
     }
-    if (c === "'") { inStr = true; cur += c; continue }
-    if (c === '(') { depth++; cur += c; continue }
-    if (c === ')') { depth--; cur += c; continue }
-    if (c === ',' && depth === 0) { out.push(cur.trim()); cur = ''; continue }
-    cur += c
+    if (c === "'") { inStr = true; continue }
+    if (c === '(') { depth++; continue }
+    if (c === ')') { depth--; continue }
+    if (c === ',' && depth === 0) { out.push(s.slice(start, i).trim()); start = i + 1 }
   }
-  if (cur.trim().length) out.push(cur.trim())
+  const last = s.slice(start).trim()
+  if (last.length) out.push(last)
   return out
 }
 
@@ -87,35 +83,33 @@ export function parseSTEP(text: string): ParsedSTEP {
   const body = text.slice(searchFrom, dataEnd >= 0 ? dataEnd : text.length)
 
   // Split the DATA section into `#id = TYPE(...)` statements (quote-aware).
+  // Statements are located by index and sliced out once — accumulating them
+  // character by character is orders of magnitude slower on multi-MB files.
   const entities = new Map<number, Entity>()
   {
     let inStr = false
-    let cur = ''
+    let start = 0
     for (let i = 0; i < body.length; i++) {
       const c = body[i]
       if (inStr) {
-        cur += c
-        if (c === "'") { if (body[i + 1] === "'") { cur += "'"; i++ } else inStr = false }
+        if (c === "'") { if (body[i + 1] === "'") i++; else inStr = false }
         continue
       }
-      if (c === "'") { inStr = true; cur += c; continue }
-      if (c === ';') {
-        const st = cur.trim()
-        cur = ''
-        if (st[0] !== '#') continue
-        const eq = st.indexOf('=')
-        if (eq < 0) continue
-        const id = parseInt(st.slice(1, eq), 10)
-        if (!Number.isFinite(id)) continue
-        const rest = st.slice(eq + 1).trim()
-        const p = rest.indexOf('(')
-        if (p < 0) continue
-        const type = rest.slice(0, p).trim().toUpperCase()
-        const args = rest.slice(p + 1, rest.lastIndexOf(')'))
-        entities.set(id, { type, args })
-        continue
-      }
-      cur += c
+      if (c === "'") { inStr = true; continue }
+      if (c !== ';') continue
+      const st = body.slice(start, i).trim()
+      start = i + 1
+      if (st.charCodeAt(0) !== 35 /* # */) continue
+      const eq = st.indexOf('=')
+      if (eq < 0) continue
+      const id = parseInt(st.slice(1, eq), 10)
+      if (!Number.isFinite(id)) continue
+      const rest = st.slice(eq + 1).trim()
+      const p = rest.indexOf('(')
+      if (p < 0) continue
+      const type = rest.slice(0, p).trim().toUpperCase()
+      const args = rest.slice(p + 1, rest.lastIndexOf(')'))
+      entities.set(id, { type, args })
     }
   }
 
@@ -200,8 +194,11 @@ export function parseSTEP(text: string): ParsedSTEP {
   }
 
   // --- Faces --------------------------------------------------------------
-  const indices: number[] = []
-  const addFace = (faceId: number) => {
+  // Collect every face's loops FIRST, then triangulate once at the end: the
+  // vertex buffer keeps growing while loops are resolved, so snapshotting it
+  // per face would be O(faces × vertices) and hang on real files.
+  const faceLoops: number[][][] = []
+  const collectFace = (faceId: number) => {
     const a = argsOf(faceId)
     // ADVANCED_FACE('',(#bound,...),#surface,sameSense)
     const boundsList = a.find(Array.isArray) as Value[] | undefined
@@ -217,16 +214,21 @@ export function parseSTEP(text: string): ParsedSTEP {
       else outer = ring // first bound becomes outer if none is explicitly outer
     }
     if (!outer || outer.length < 3) return
-    const normal = newell(outer, verts)
-    if (!normal) return
-    const V = Float32Array.from(verts)
-    for (const tri of triangulateFace(V, [outer, ...holes], normal)) {
-      indices.push(tri[0], tri[1], tri[2])
-    }
+    faceLoops.push([outer, ...holes])
   }
 
   for (const [id, e] of entities) {
-    if (e.type === 'ADVANCED_FACE' || e.type === 'FACE_SURFACE') addFace(id)
+    if (e.type === 'ADVANCED_FACE' || e.type === 'FACE_SURFACE') collectFace(id)
+  }
+
+  const indices: number[] = []
+  const V = Float32Array.from(verts)
+  for (const loops of faceLoops) {
+    const normal = newell(loops[0], verts)
+    if (!normal) continue
+    for (const tri of triangulateFace(V, loops, normal)) {
+      indices.push(tri[0], tri[1], tri[2])
+    }
   }
 
   // Emit a non-indexed triangle soup (matches parseSTL's output shape).
