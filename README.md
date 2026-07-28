@@ -4,6 +4,12 @@ Stepper turns an arbitrary input mesh (**STL / OBJ / GLTF / GLB**) into a clean,
 watertight **engineering solid** and exports it to **STEP (ISO 10303-21, AP214)**
 — ready to open in FreeCAD, Fusion, SolidWorks, or any CAD package, and to STL.
 
+It converts **both directions**: drop a **STEP/STP** file and it is imported as a
+mesh (`src/lib/step/parseSTEP.ts` reads the B-rep topology — shells → faces →
+loops → vertices — and triangulates each face in its plane), so STEP → STL works
+as well as mesh → STEP. Planar/faceted B-reps import exactly; curved surfaces are
+approximated by the polygon through their edge vertices.
+
 It reuses the 3D environment, design system, mesh loaders and the
 voxel *slicer* from the sibling **Optimizer** project.
 

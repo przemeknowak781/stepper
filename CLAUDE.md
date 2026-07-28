@@ -69,6 +69,19 @@ project-type deps). Keep these in sync with Optimizer when fixing bugs.
   parsers). `num()` uses fixed 6-decimal notation; a test guards against `e`.
 - Unit is hard-coded millimetres.
 
+## STEP importer (`src/lib/step/parseSTEP.ts`) — the reverse direction
+
+`parseSTEP(text)` reads the DATA section into `#id → TYPE(args)` entities with a
+quote-aware splitter (strings may contain `,`/`(`/`)` and `''` escapes), then walks
+`ADVANCED_FACE`/`FACE_SURFACE` → bounds → `EDGE_LOOP` (via `ORIENTED_EDGE` →
+`EDGE_CURVE`, honouring `.T./.F.` sense) or `POLY_LOOP`, and ear-clips each face
+polygon in its plane (`triangulateFace`, holes supported). Output is a
+non-indexed triangle soup, same shape as `parseSTL`, so `load3DFile` treats
+`.step`/`.stp` like any other input format. Planar B-reps (including Stepper's own
+exports) round-trip exactly — see `tests/unit/parseSTEP.test.ts`, which checks
+volume, AABB and watertightness after re-welding. Curved surfaces are only
+approximated by their edge-vertex polygon (no NURBS evaluation).
+
 ## State & UI
 
 - One zustand store: `src/state/converterStore.ts` (input mesh, settings, result,

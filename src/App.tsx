@@ -37,7 +37,7 @@ function Header() {
           <input
             ref={fileInput}
             type="file"
-            accept=".stl,.obj,.gltf,.glb"
+            accept=".stl,.obj,.gltf,.glb,.step,.stp"
             className="hidden"
             onChange={(e) => {
               const f = e.target.files?.[0]

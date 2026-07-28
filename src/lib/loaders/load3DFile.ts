@@ -1,13 +1,14 @@
 import { parseSTL } from '@/lib/stl/parseSTL'
+import { parseSTEP } from '@/lib/step/parseSTEP'
 import { listMeshesFromOBJ } from './loadOBJ'
 import { listMeshesFromGLTF } from './loadGLTF'
 import type { MainMeshData } from '@/types/project'
 import type { NamedMesh } from './extractMeshes'
 
-export type SupportedFormat = 'stl' | 'obj' | 'gltf' | 'glb'
+export type SupportedFormat = 'stl' | 'obj' | 'gltf' | 'glb' | 'step' | 'stp'
 
 function extension(filename: string): SupportedFormat | null {
-  const m = filename.toLowerCase().match(/\.(stl|obj|gltf|glb)$/)
+  const m = filename.toLowerCase().match(/\.(stl|obj|gltf|glb|step|stp)$/)
   if (!m) return null
   return m[1] as SupportedFormat
 }
@@ -37,6 +38,15 @@ export async function loadFileOutcome(file: File): Promise<LoadOutcome> {
   if (fmt === 'stl') {
     const buf = await file.arrayBuffer()
     return { kind: 'single', data: toMainMeshData(parseSTL(buf)) }
+  }
+  if (fmt === 'step' || fmt === 'stp') {
+    const parsed = parseSTEP(await file.text())
+    if (parsed.triangleCount === 0) {
+      throw new Error(
+        'No faces found in the STEP file. Only B-rep solids with planar/faceted faces are supported.',
+      )
+    }
+    return { kind: 'single', data: toMainMeshData(parsed) }
   }
   if (fmt === 'obj') {
     const text = await file.text()

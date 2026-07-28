@@ -18,6 +18,7 @@ export function UploadZone() {
       'model/obj': ['.obj'],
       'model/gltf+json': ['.gltf'],
       'model/gltf-binary': ['.glb'],
+      'model/step': ['.step', '.stp'],
     },
     onDrop: (files) => files[0] && upload(files[0]),
   })
@@ -39,7 +40,8 @@ export function UploadZone() {
         <div>
           <h2 className="text-lg font-semibold text-ink-1">Drop a 3D model to convert</h2>
           <p className="mt-1 text-sm text-ink-3">
-            STL, OBJ, GLTF or GLB — reconstructed into a watertight solid, exported to STEP.
+            STL, OBJ, GLTF, GLB or STEP — converted into a watertight solid and exported back to
+            STEP or STL, either direction.
           </p>
         </div>
         <p className="text-xs text-ink-4">or click to browse</p>
