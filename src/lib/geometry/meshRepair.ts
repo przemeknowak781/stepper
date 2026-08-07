@@ -183,31 +183,72 @@ export function repairMesh(
   let filledHoles = 0
   let openBoundaryLoops = 0
   if (fillHoles) {
-    // Directed boundary edges (from the single owning triangle).
-    const nextFrom = new Map<number, number>()
+    // Boundary loops, walked through the face fan.
+    //
+    // The successor of a boundary edge cannot be chosen greedily. A vertex may
+    // start more than one boundary edge — that happens wherever two openings
+    // pinch together at a shared corner — and picking either one splices the
+    // two openings into a single figure-of-eight that ear-clipping then turns
+    // into garbage. Rotating around the end vertex through the incident faces
+    // finds the edge that actually continues the same opening.
     const boundaryDirected = new Set<number>()
     for (const [k, owners] of edgeTris) {
       if (owners.length !== 1) continue
       const t = owners[0]
       const lo = Math.floor(k / SHIFT), hi = k % SHIFT
       const dir = triEdgeDir(t, lo, hi)
-      const x = dir === 1 ? lo : hi
-      const y = dir === 1 ? hi : lo
-      nextFrom.set(x, y)
-      boundaryDirected.add(dkey(x, y))
+      boundaryDirected.add(dir === 1 ? dkey(lo, hi) : dkey(hi, lo))
     }
-    const used = new Set<number>()
-    const loops: number[][] = []
-    for (const start of nextFrom.keys()) {
-      if (used.has(start)) continue
-      const loop: number[] = []
-      let cur = start
-      let guard = 0
-      while (!used.has(cur) && nextFrom.has(cur) && guard++ < nextFrom.size + 1) {
-        used.add(cur); loop.push(cur); cur = nextFrom.get(cur)!
+
+    /** Vertex `w` such that (v → w) is a directed edge of triangle `t`. */
+    const outFrom = (t: number, v: number): number => {
+      const a = tris[t * 3], b = tris[t * 3 + 1], c = tris[t * 3 + 2]
+      if (a === v) return b
+      if (b === v) return c
+      if (c === v) return a
+      return -1
+    }
+
+    /** Next boundary vertex after the directed boundary edge u → v, or -1. */
+    const nextBoundary = (u: number, v: number): number => {
+      const start = edgeTris.get(ekey(u, v))
+      if (!start || start.length !== 1) return -1
+      let t = start[0]
+      for (let guard = 0; guard < 4096; guard++) {
+        const w = outFrom(t, v)
+        if (w < 0) return -1
+        const owners = edgeTris.get(ekey(v, w))
+        if (!owners) return -1
+        if (owners.length === 1) return w        // reached the next boundary edge
+        if (owners.length !== 2) return -1       // non-manifold: refuse to guess
+        t = owners[0] === t ? owners[1] : owners[0]
       }
-      if (loop.length >= 3) loops.push(loop)
+      return -1
     }
+
+    const usedEdges = new Set<number>()
+    const loops: number[][] = []
+    for (const directed of boundaryDirected) {
+      if (usedEdges.has(directed)) continue
+      const origin = Math.floor(directed / SHIFT)
+      const loop: number[] = [origin]
+      usedEdges.add(directed)
+      let prev = origin
+      let cur = directed % SHIFT
+      let ok = true
+      for (let guard = 0; cur !== origin; guard++) {
+        if (guard > boundaryDirected.size) { ok = false; break }
+        const next = nextBoundary(prev, cur)
+        if (next < 0) { ok = false; break }
+        usedEdges.add(dkey(cur, next))
+        loop.push(cur)
+        prev = cur
+        cur = next
+      }
+      if (ok && loop.length >= 3) loops.push(...splitPinchedLoop(loop))
+      else if (!ok) openBoundaryLoops++
+    }
+
     for (const ring of loops) {
       if (ring.length > maxHoleEdges) { openBoundaryLoops++; continue }
       const n = newellNormal(ring, V)
@@ -467,4 +508,32 @@ function segmentParam(V: Float32Array, a: number, b: number, v: number): number 
       (V[v * 3 + 1] - V[a * 3 + 1]) * dy +
       (V[v * 3 + 2] - V[a * 3 + 2]) * dz) / lengthSq
   )
+}
+
+/**
+ * Break a boundary walk that revisits a vertex into simple closed rings.
+ *
+ * Where two openings pinch together the boundary passes through the shared
+ * vertex twice, so the walk is a figure-of-eight rather than a simple polygon.
+ * Ear clipping needs simple polygons: handed a self-touching ring it produces
+ * overlapping triangles that leave the mesh open anyway. Cutting the ring at
+ * each repeat yields the individual openings, which fill correctly.
+ */
+export function splitPinchedLoop(loop: number[]): number[][] {
+  const out: number[][] = []
+  const stack: number[] = []
+  const seenAt = new Map<number, number>()
+  for (const v of loop) {
+    const previous = seenAt.get(v)
+    if (previous !== undefined) {
+      // Everything since the earlier visit is a closed ring of its own.
+      const ring = stack.splice(previous)
+      for (const w of ring) seenAt.delete(w)
+      if (ring.length >= 3) out.push(ring)
+    }
+    seenAt.set(v, stack.length)
+    stack.push(v)
+  }
+  if (stack.length >= 3) out.push(stack)
+  return out
 }
