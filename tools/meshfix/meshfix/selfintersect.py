@@ -166,45 +166,86 @@ def _reject(
     return pairs[keep]
 
 
-def _straddles(subject: np.ndarray, reference: np.ndarray, eps: float = 1e-12) -> np.ndarray:
-    """Whether each subject triangle reaches both sides of the reference plane."""
+def _straddles(subject: np.ndarray, reference: np.ndarray, eps_rel: float = 1e-9) -> np.ndarray:
+    """Whether each subject triangle reaches both sides of the reference plane.
+
+    Distances are divided by the normal's length so they are lengths rather
+    than area-scaled quantities, for the same reason as in
+    :func:`_tri_tri_intersect`: a fixed epsilon against an unnormalised
+    distance means something different on every mesh.
+    """
     normal = np.cross(reference[:, 1] - reference[:, 0], reference[:, 2] - reference[:, 0])
-    offset = -np.einsum("ij,ij->i", normal, reference[:, 0])
-    distance = np.einsum("ijk,ik->ij", subject, normal) + offset[:, None]
-    return ~(np.all(distance > eps, axis=1) | np.all(distance < -eps, axis=1))
+    length = np.linalg.norm(normal, axis=1)
+    scale = np.where(length > 0, length, 1.0)[:, None]
+    distance = np.einsum("ijk,ik->ij", subject - reference[:, 0][:, None], normal) / scale
+
+    size = np.maximum(
+        (subject.max(axis=1) - subject.min(axis=1)).max(axis=1),
+        (reference.max(axis=1) - reference.min(axis=1)).max(axis=1),
+    )
+    eps = (eps_rel * size)[:, None]
+    keep = ~(np.all(distance > eps, axis=1) | np.all(distance < -eps, axis=1))
+    return keep | (length == 0)   # degenerate reference: let the narrow phase decide
 
 
 # --------------------------------------------------------------------------
 # Narrow phase (Möller)
 # --------------------------------------------------------------------------
 
-def _tri_tri_intersect(t1: np.ndarray, t2: np.ndarray, eps: float = 1e-12) -> bool:
-    """Möller's triangle-triangle overlap test, including the coplanar case."""
-    n2 = np.cross(t2[1] - t2[0], t2[2] - t2[0])
-    d2 = -float(n2 @ t2[0])
-    dist1 = t1 @ n2 + d2
+def _tri_tri_intersect(t1: np.ndarray, t2: np.ndarray, eps_rel: float = 1e-9) -> bool:
+    """Möller's triangle-triangle overlap test, including the coplanar case.
+
+    Every tolerance here is **relative**, and that is not a refinement — an
+    absolute one gets the answer wrong. The raw cross product of two face
+    normals scales with the product of the triangle *areas*, so on a voxel mesh
+    a few thousandths of a unit across (``|n| ~ 6e-6``) two exactly
+    perpendicular walls produce ``|n1 x n2|^2 ~ 1e-21``. Against a fixed
+    ``1e-12`` that reads as "parallel", the pair falls through to the coplanar
+    overlap test, and every wall meeting another wall at a corner is reported
+    as a self-intersection. Normalising first makes the parallel test what it
+    actually is — an angle — and the plane distances real lengths, which can
+    then be judged against the size of the triangles being compared.
+    """
+    n1, len1 = _unit_normal(t1)
+    n2, len2 = _unit_normal(t2)
+    if len1 == 0.0 or len2 == 0.0:
+        return False        # a degenerate face is A6's business, not A5's
+
+    eps = eps_rel * max(_extent(t1), _extent(t2))
+
+    dist1 = (t1 - t2[0]) @ n2
     if np.all(dist1 > eps) or np.all(dist1 < -eps):
         return False
 
-    n1 = np.cross(t1[1] - t1[0], t1[2] - t1[0])
-    d1 = -float(n1 @ t1[0])
-    dist2 = t2 @ n1 + d1
+    dist2 = (t2 - t1[0]) @ n1
     if np.all(dist2 > eps) or np.all(dist2 < -eps):
         return False
 
     direction = np.cross(n1, n2)
-    if float(direction @ direction) < eps:
+    if float(np.linalg.norm(direction)) <= eps_rel:   # sine of the angle between them
         return _coplanar_overlap(t1, t2, n1)
 
     axis = int(np.argmax(np.abs(direction)))
-    i1 = _plane_interval(t1[:, axis], dist1)
-    i2 = _plane_interval(t2[:, axis], dist2)
+    i1 = _plane_interval(t1[:, axis], dist1, eps)
+    i2 = _plane_interval(t2[:, axis], dist2, eps)
     if i1 is None or i2 is None:
         return False
     return i1[0] <= i2[1] and i2[0] <= i1[1]
 
 
-def _plane_interval(proj: np.ndarray, dist: np.ndarray, eps: float = 1e-12):
+def _unit_normal(tri: np.ndarray) -> tuple[np.ndarray, float]:
+    """Unit face normal plus the raw cross-product length (0 when degenerate)."""
+    normal = np.cross(tri[1] - tri[0], tri[2] - tri[0])
+    length = float(np.linalg.norm(normal))
+    return (normal / length, length) if length > 0 else (normal, 0.0)
+
+
+def _extent(tri: np.ndarray) -> float:
+    """Longest side of the triangle's bounding box — its characteristic size."""
+    return float((tri.max(axis=0) - tri.min(axis=0)).max())
+
+
+def _plane_interval(proj: np.ndarray, dist: np.ndarray, eps: float):
     """Where a triangle crosses the other's plane, projected on one axis.
 
     Collecting every edge crossing and every on-plane vertex handles the

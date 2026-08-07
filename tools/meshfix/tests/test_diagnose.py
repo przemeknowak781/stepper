@@ -69,6 +69,25 @@ def test_clean_mesh_has_no_false_selfintersections():
         assert analyze(build(name)).n_selfintersecting_faces == 0, name
 
 
+@pytest.mark.parametrize("scale", [1.0, 1e-3, 1e3])
+def test_selfintersection_verdict_does_not_depend_on_model_scale(scale):
+    """A5 must not change its mind when the same mesh is measured in other units.
+
+    It used to. The parallel-plane test compared the *unnormalised* ``n1 x n2``
+    against a fixed epsilon, and that quantity scales with the product of the
+    face areas — so shrinking a mesh made every pair look coplanar, and two
+    perpendicular walls meeting at a corner were reported as intersecting. On a
+    voxel mesh a few thousandths across that flagged 27771 of 71920 faces.
+    """
+    mesh = build("clean_cube")
+    mesh.apply_scale(scale)
+    assert analyze(mesh).n_selfintersecting_faces == 0
+
+    tangled = build("selfintersect_torus")
+    tangled.apply_scale(scale)
+    assert analyze(tangled).n_selfintersecting_faces > 0
+
+
 def test_flipped_normals_is_not_a_shell():
     """Inconsistent winding corrupts the divergence volume.
 

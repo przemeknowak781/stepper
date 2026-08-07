@@ -104,6 +104,7 @@ def compare(
         "hausdorff_approximate": True,
         "hausdorff_noise_floor": noise_floor(reference, len(ref_points)),
         "chamfer": chamfer,
+        "candidate_volume": cand_volume,
         "volume_ratio": (
             float(cand_volume / ref_volume)
             if ref_volume not in (None, 0.0) and cand_volume is not None
@@ -139,6 +140,17 @@ def noise_floor(mesh: trimesh.Trimesh, n_samples: int) -> float:
 
 
 def _safe_volume(mesh: trimesh.Trimesh) -> float | None:
+    """Enclosed volume, or ``None`` when the mesh does not enclose anything.
+
+    ``mesh.volume`` is the divergence integral over the faces, and it returns a
+    number for *any* surface — including an open sheet or a mesh whose windings
+    disagree, where that number measures nothing. Reporting it as a volume is
+    how a shell ends up compared against its own noise. So the two conditions
+    that make the integral a volume are checked first, and anything else is
+    honestly undefined.
+    """
+    if not (mesh.is_watertight and mesh.is_winding_consistent):
+        return None
     with np.errstate(invalid="ignore", divide="ignore"):
         try:
             return float(mesh.volume)

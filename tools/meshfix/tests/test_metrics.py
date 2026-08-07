@@ -114,3 +114,28 @@ def test_wall_thickness_orders_two_plates_correctly():
     a = wall_thickness(thin, seed=0, n_points=400, n_rays=7)["min_wall_estimate"]
     b = wall_thickness(thick, seed=0, n_points=400, n_rays=7)["min_wall_estimate"]
     assert b > a
+
+
+def test_volume_ratio_is_none_when_the_input_encloses_nothing():
+    """An open sheet has no volume, and reporting one is how shells go wrong.
+
+    ``mesh.volume`` is the divergence integral, which returns a number for any
+    surface. For the open cube that number is meaningless, and dividing by it
+    produced ratios like -214% that then tripped the "hollow result" warning on
+    a perfectly good solid.
+    """
+    open_shell = build("open_cube")
+    metrics = compare(open_shell, build("clean_cube"), seed=0)
+    assert metrics["volume_ratio"] is None
+    assert metrics["candidate_volume"] == pytest.approx(build("clean_cube").volume)
+
+    # A closed, consistently wound pair still gets a real ratio.
+    cube = build("clean_cube")
+    bigger = cube.copy()
+    bigger.apply_scale(2.0)
+    assert compare(cube, bigger, seed=0)["volume_ratio"] == pytest.approx(8.0, rel=1e-6)
+
+
+def test_volume_ratio_is_none_when_windings_disagree():
+    metrics = compare(build("flipped_normals"), build("clean_cube"), seed=0)
+    assert metrics["volume_ratio"] is None

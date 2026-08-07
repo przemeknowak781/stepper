@@ -13,6 +13,23 @@ approximated by the polygon through their edge vertices.
 It reuses the 3D environment, design system, mesh loaders and the
 voxel *slicer* from the sibling **Optimizer** project.
 
+## Surfaces need a wall thickness
+
+Plenty of files that look like parts are not solids: an open surface exported
+from a surface modeller, a scan, or a generative model encloses no volume, and
+there is no correct solid for one until you say how thick the wall should be.
+
+Stepper detects this before converting and **asks** rather than guessing. Give it
+a wall and it offsets the surface symmetrically, closes the rim, and converts the
+result — usually along the exact path, since a walled surface is a closed
+manifold. Leave it unset and nothing is exported, with the reason stated: a
+solid built without your number would be an arbitrary thickness, not yours.
+
+The alternative is what most converters do — solidify anyway and return a plate
+one voxel thick, stair-stepped and nothing like the input. That looks like a
+conversion bug. It is really an impossible question answered with an invented
+number.
+
 ## Conversion: faithful first, reconstruct only when forced
 
 The goal is an **excellent, economical, exact** solid — not a heavy

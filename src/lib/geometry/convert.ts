@@ -6,6 +6,7 @@ import { planarizeMesh, type PlanarBrep } from './planarize'
 import { triangulateFace } from './triangulate'
 import { repairMesh, type RepairReport } from './meshRepair'
 import { solidifyToOccupancy, paddedGridFor } from './solidify'
+import { diagnoseShell, thickenShell, type ShellDiagnosis } from './shell'
 
 /**
  * How the input surface is turned into an engineering solid:
@@ -34,6 +35,13 @@ export interface ConvertSettings {
    * many voxels wide so the flood fill can't leak into a hollow model. 0 = off.
    */
   seal: number
+  /**
+   * Wall to give a zero-thickness input surface, in model units. 0 means "not
+   * set": a surface input is then reported as such rather than being solidified
+   * into a plate one voxel thick, because there is no correct answer without
+   * this number (see `shell.ts`).
+   */
+  shellThickness: number
 }
 
 export const DEFAULT_CONVERT_SETTINGS: ConvertSettings = {
@@ -44,6 +52,7 @@ export const DEFAULT_CONVERT_SETTINGS: ConvertSettings = {
   smoothIterations: 8,
   planarToleranceDeg: 1,
   seal: 1,
+  shellThickness: 0,
 }
 
 export interface ConvertReport {
@@ -61,6 +70,10 @@ export interface ConvertReport {
   reconstructed: boolean
   /** Manifold-repair stats when the faithful path ran (undefined for pure voxel/smooth). */
   repair?: RepairReport
+  /** Present when the input is a surface rather than a solid. */
+  shell?: ShellDiagnosis
+  /** The wall actually applied to a surface input, in model units. */
+  appliedThickness?: number
   aabb: AABB
 }
 
@@ -97,7 +110,58 @@ export function convertMeshToSolid(
   settings: ConvertSettings,
 ): ConvertResult {
   const inputTriangles = indices ? indices.length / 3 : vertices.length / 9
+  const shell = diagnoseShell(vertices, indices)
 
+  // A surface has no solid form until someone says how thick it is. With a wall
+  // supplied, thicken first and convert the resulting solid; without one, carry
+  // on so the user sees something, but hand the diagnosis to the UI so the
+  // one-voxel plate that comes out is labelled rather than passed off as the
+  // conversion the user asked for.
+  if (shell.isShell && settings.shellThickness > 0) {
+    // Weld and orient first: an offset direction is meaningless while
+    // neighbouring triangles disagree about which side is out. Hole filling has
+    // to be off — a sheet's outer boundary reads as a 32-edge hole, and capping
+    // it produces a closed surface of zero volume with no rim left to thicken.
+    const welded = repairMesh(vertices, indices, { fillHoles: false })
+    const walled = thickenShell(welded.vertices, welded.indices, settings.shellThickness)
+    const result = convertCore(walled.vertices, walled.indices, settings, inputTriangles)
+    result.report.shell = shell
+    result.report.appliedThickness = settings.shellThickness
+    return result
+  }
+
+  if (shell.isShell) {
+    // No wall, so there is no solid to produce. Returning the one-voxel plate
+    // the solidifier would build is worse than returning nothing: it looks like
+    // a converted model and it is not one. The diagnosis goes back instead, and
+    // the UI asks for the thickness.
+    return {
+      solid: { vertices: new Float32Array(0), indices: new Uint32Array(0) },
+      brep: null,
+      report: {
+        inputTriangles,
+        outputTriangles: 0,
+        outputVertices: 0,
+        occupiedVoxels: 0,
+        openRowFraction: 0,
+        watertight: false,
+        faithful: false,
+        reconstructed: false,
+        shell,
+        aabb: computeAABB(vertices),
+      },
+    }
+  }
+
+  return convertCore(vertices, indices, settings, inputTriangles)
+}
+
+function convertCore(
+  vertices: Float32Array,
+  indices: Uint32Array | null,
+  settings: ConvertSettings,
+  inputTriangles: number,
+): ConvertResult {
   if (settings.method === 'faithful') {
     const repaired = repairMesh(vertices, indices)
     if (repaired.report.closed) {

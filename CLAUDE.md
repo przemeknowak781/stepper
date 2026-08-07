@@ -11,6 +11,35 @@ mesh loaders and voxel *slicer* from the sibling **Optimizer** repo.
 
 See `README.md` for the user-facing overview.
 
+## A surface is not a solid (`src/lib/geometry/shell.ts`)
+
+Checked **before** any method runs, because it decides whether the question is
+answerable at all. `diagnoseShell` welds by position (an STL soup shares no
+indices, so an un-welded edge census reads either "every edge is a boundary" or
+"none is"), counts single-use edges, and scores the isoperimetric quotient
+`1 - 6*sqrt(pi)*|V| / A^1.5`. A closed mesh scores 0 by definition; a sheet
+drives V to 0 and scores 1. At or above `SHELL_SCORE_THRESHOLD` (0.9) the input
+is a surface, and there is **no correct solid for it** — the answer depends on a
+wall thickness only the user knows.
+
+So `convertMeshToSolid` refuses: with `shellThickness === 0` it returns an empty
+solid plus the diagnosis, and the UI asks for the wall. Solidifying anyway would
+return a plate exactly one voxel thick, which looks like a conversion bug and is
+really an impossible question answered with an invented number. `tools/meshfix`
+takes the same position (criterion A10).
+
+With a wall, `thickenShell` offsets ±t/2 along angle-weighted vertex normals and
+closes the rim. Two details are load-bearing: the offset is **mitred** by
+`1/cos` (stepping along an *averaged* normal clears each incident face by only
+`t/2 * cos`, so an unmitred wall is 37% thin at a fold), capped at `MAX_MITER`
+2.0 just above a cube corner's `sqrt(3)` so a fold cannot fire a spike; and the
+rim band keeps each boundary edge in its **owning face's direction**, since
+sorting the edge to count its uses discards the winding and the band then
+cancels its own volume. Welding before thickening must pass `fillHoles: false` —
+a sheet's outer boundary is a legitimate 32-edge "hole", and capping it leaves
+nothing to thicken. A walled surface is usually a closed manifold, so it takes
+the **exact** path, not voxels.
+
 ## Core idea: faithful planar merge first; reconstruct only to repair
 
 `src/lib/geometry/convert.ts::convertMeshToSolid` picks a method:
@@ -50,6 +79,12 @@ path reports `faithful: true`, reconstruction reports `reconstructed: true`.
 `src/components/viewer/bvh.ts` are copied from Optimizer with import paths
 adjusted. `boundingBox.ts` is a slimmed local copy (AABB helpers only, no
 project-type deps). Keep these in sync with Optimizer when fixing bugs.
+
+One deliberate divergence: `sliceFrame.ts::computeGrid` clamps the layer to
+`cellSize / MAX_VOXEL_ASPECT` (64). Surface sampling steps at half the smallest
+voxel dimension and its cost grows as the inverse square, so a flat input — which
+falls to the 1e-9 extent floor — does not produce a bad grid, it produces one
+that never finishes.
 
 ## STEP exporter invariants (`src/lib/step/exportSTEP.ts`)
 

@@ -22,7 +22,7 @@ from .backends import RunContext
 from .diagnose import SHELL_SCORE_THRESHOLD, analyze
 from .io import EmptyMeshError, UnsupportedFormatError, load_mesh, save_mesh, sha256_file
 from .orchestrate import build_chain, run_chain, write_result
-from .postprocess import thicken_shell
+from .postprocess import MAX_MITER, thicken_shell
 from .report import Report
 from .validate import validate
 
@@ -213,8 +213,26 @@ def run(
         raise typer.Exit(EXIT_OK if report.accepted else EXIT_REJECTED)
 
     # --- repair path --------------------------------------------------------
+    expected_volume: float | None = None
+    fidelity_reference = mesh
+    deviation_budget = max_deviation
     if shell_thickness is not None and diagnosis.shell_score >= SHELL_SCORE_THRESHOLD:
+        # A sheet of this area given this wall should enclose roughly this much.
+        # It is the only volume reference a shell has, and without it the
+        # collapse check has nothing to compare against (orchestrate).
+        expected_volume = float(mesh.area) * shell_thickness
         mesh = thicken_shell(mesh, shell_thickness)
+        # Fidelity keeps measuring against the *original* sheet, not the
+        # thickened copy: where the sheet folds tighter than the wall, the two
+        # offset sheets pass through each other and end up inside the solid
+        # rather than on its boundary, so measuring against them would report a
+        # deviation for geometry that was correctly absorbed. Against the sheet
+        # the answer is the one worth knowing — does the solid follow it — and
+        # the wall itself is deviation the user asked for, so it is added to the
+        # budget: half a thickness over the flats, and up to `MAX_MITER` times
+        # that at a crease, which is the furthest the offset can legitimately
+        # put a surface from the sheet it came from.
+        deviation_budget = max_deviation + shell_thickness / 2.0 * MAX_MITER
         report.warnings.append(f"shell_thickened (thickness={shell_thickness})")
         log.info("thickened open shell by %.4g before repair", shell_thickness)
 
@@ -243,10 +261,12 @@ def run(
             workdir=workdir,
             ctx=ctx,
             expected_components=expected_components,
-            max_deviation=max_deviation,
+            max_deviation=deviation_budget,
             min_wall=min_wall,
             strict=strict,
             seed=seed,
+            expected_volume=expected_volume,
+            reference=fidelity_reference,
         )
         report.warnings.extend(outcome.warnings)
         report.backend_attempts = [a.to_dict() for a in outcome.attempts]

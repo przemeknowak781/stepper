@@ -71,6 +71,9 @@ export function frameToWorld(
  * convention — the smaller axis simply gets fewer cells of the same size so
  * cells stay square).  Both counts are clamped to ≥1.
  */
+/** How much thinner than wide a voxel may get before the grid is clamped. */
+const MAX_VOXEL_ASPECT = 64
+
 export function computeGrid(
   worldAABB: AABB,
   axis: SliceAxis,
@@ -90,7 +93,13 @@ export function computeGrid(
   const cellSize = Math.max(extentU, extentV) / dens
   const nx = Math.max(1, Math.ceil(extentU / cellSize))
   const ny = Math.max(1, Math.ceil(extentV / cellSize))
-  const layerThickness = extentW / nz
+  // A flat input drives `extentW` to the 1e-9 floor above and the layer with
+  // it, and since surface sampling steps at half the smallest voxel dimension,
+  // the sample count per triangle grows as its inverse square — a zero-extent
+  // axis does not produce a bad grid, it produces one that never finishes.
+  // Past this ratio the voxel is too anisotropic to mean anything anyway; the
+  // grid then covers more than the AABB, which is harmless padding.
+  const layerThickness = Math.max(extentW / nz, cellSize / MAX_VOXEL_ASPECT)
 
   return {
     axis,

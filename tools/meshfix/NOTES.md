@@ -349,3 +349,86 @@ code-splitting, and `optimizeDeps: { exclude: ['pyodide'] }` because esbuild's
 pre-bundler relocates `pyodide.mjs` but not the sibling assets it loads by
 relative import, which then 404. Reuse those settings rather than rediscovering
 them.
+
+---
+
+## 9. Open shells: three bugs one real model exposed
+
+An open-shell model with 58 components, 67 boundary edges and a bounding box of
+0.43 × 0.18 × **0.037** (`shell_score` 0.97) went the whole way through
+`--shell-thickness` and came back rejected. Each layer of the rejection turned
+out to be a separate defect, and all three were the same class of mistake:
+a quantity judged against a reference that does not mean what the code assumed.
+
+### 9.1 A5 flagged 27 771 of 71 920 faces on a cuberille
+
+A cuberille cannot self-intersect: it is a union of axis-aligned voxel walls.
+The parallel-plane test in `_tri_tri_intersect` compared the **unnormalised**
+`n1 x n2` against a fixed `1e-12`. That quantity scales with the product of the
+two triangle *areas*, so for voxels 0.0025 across (`|n| ~ 6e-6`) two exactly
+**perpendicular** walls give `|n1 x n2|^2 ~ 1.3e-21` — read as "parallel", sent
+to the coplanar overlap test, reported as intersecting. Every corner in the
+model was a false positive.
+
+Fixed by normalising the face normals first, which turns the parallel test into
+an actual angle and the plane distances into actual lengths, then scaling the
+distance tolerance by the size of the triangles being compared. The same
+absolute epsilon was in the vectorised `_straddles` rejection stage.
+`tests/test_diagnose.py::test_selfintersection_verdict_does_not_depend_on_model_scale`
+runs the fixtures at 1e-3 and 1e3 scale, which is what would have caught it.
+The input's own count corrected from 254 to 141 at the same time.
+
+### 9.2 "volume_collapsed (output is -214% of the input volume)"
+
+`mesh.volume` is the divergence integral over the faces and returns a number
+for *any* surface, including an open sheet whose windings disagree. That number
+is not a volume, and dividing by it produced the negative ratio above, which
+then tripped the hollow-result warning on a perfectly good solid.
+
+`_safe_volume` now returns `None` unless the mesh is watertight **and**
+consistently wound. That silences the false warning but would also silence the
+real check for exactly the inputs that most need it, so a thickened shell
+supplies the reference it does have: sheet area times the requested wall. When
+neither is available the report says the check was skipped, rather than
+implying it passed.
+
+### 9.3 Fidelity was measured against the wrong mesh
+
+A8 compared the output to the *thickened* shell. Where a sheet folds tighter
+than its new wall, the two offset copies pass through each other and end up
+**inside** the solid rather than on its boundary — measured on this model, half
+the sampled surface. Those points are correctly absorbed, but they read as
+deviation, and the number did not converge with resolution (0.0082 at 200,
+0.0078 at 700), which is the tell.
+
+Fidelity now measures against the **original sheet**, which is the question
+worth asking — does the solid follow the surface it came from — and the wall is
+added to the budget, since it is deviation the user asked for. The deviation
+then decomposes exactly: `MAX_MITER * thickness/2` for the offset envelope plus
+about one voxel of discretisation.
+
+### 9.4 And the wall was 37% thinner than requested
+
+Found while fixing the above. Offsetting a vertex by `t/2` along an *averaged*
+normal clears each incident face's plane by only `t/2 * cos`, so a thickened
+open cube enclosed 15.7 rather than the exact 25.0 its area and thickness
+imply. The offset is now mitred by `1/cos`, using the smallest cosine over the
+incident faces so the wall is never *thinner* than asked — erring towards too
+thick, which a solidifier absorbs, rather than too thin, which it can pinch
+away. Exact 25.000125 on the open cube.
+
+`MAX_MITER` is capped at 2.0, just above a cube corner's `sqrt(3)`, and the cap
+is doing real work: at 4.0, 11.5% of this model's vertices sat at the cap, each
+firing a spike four times the wall out of the model — which tripled the
+Hausdorff deviation and broke A2 manifoldness. Beyond three mutually
+perpendicular faces the vertex normal is not bisecting anything and extending
+along it is guesswork.
+
+### 9.5 Why none of this was caught
+
+`thicken_shell` still called `trimesh.repair.fix_normals` and `mesh.vertex_normals`,
+both of which route through trimesh's graph layer and refuse to run without
+NetworkX or SciPy — the two dependencies §8 dropped. The path died with
+`ModuleNotFoundError` the first time a real shell reached it, because **nothing
+in the suite enforced the drop**. `tests/test_postprocess.py` now runs the
+thickening path with both modules blocked from import.

@@ -31,6 +31,17 @@ export function ExportPanel() {
           </div>
         ) : converting ? (
           <p className="animate-pulse text-xs text-ink-4">Converting…</p>
+        ) : report?.shell?.isShell && !report.appliedThickness ? (
+          // Naming the reason beats an empty panel: the conversion did not fail,
+          // it is waiting for the one number that makes the question answerable.
+          <div className="flex items-start gap-2 rounded-md border border-warning-500/30 bg-warning-500/10 p-2 text-xs text-warning-500">
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            <span>
+              Surface model — set a wall thickness in Conversion to get a solid. Nothing is
+              exported until then, because a solid built without one would be an arbitrary
+              thickness, not yours.
+            </span>
+          </div>
         ) : report ? (
           <div className="rounded-md border border-line bg-surface-2 p-3">
             <Stat label="Input triangles" value={report.inputTriangles.toLocaleString()} />
@@ -75,6 +86,13 @@ export function ExportPanel() {
                 {report.repair.flippedTriangles} face(s) re-oriented,{' '}
                 {report.repair.removedDuplicate + report.repair.removedDegenerate} junk face(s) dropped
                 {report.repair.components > 1 ? `, ${report.repair.components} shells` : ''}.
+              </p>
+            )}
+            {report.appliedThickness !== undefined && (
+              <p className="mt-1.5 text-2xs leading-4 text-ink-4">
+                Input was a surface; walled to{' '}
+                <span className="font-mono">{report.appliedThickness.toFixed(4)}</span> before
+                converting.
               </p>
             )}
             {report.reconstructed && (

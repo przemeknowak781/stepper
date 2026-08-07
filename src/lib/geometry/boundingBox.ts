@@ -48,3 +48,9 @@ export function aabbMaxExtent(box: AABB): number {
   const [sx, sy, sz] = aabbSize(box)
   return Math.max(sx, sy, sz)
 }
+
+/** Body diagonal — the model's overall size, when one extent may be near zero. */
+export function aabbDiagonal(box: AABB): number {
+  const [sx, sy, sz] = aabbSize(box)
+  return Math.hypot(sx, sy, sz)
+}

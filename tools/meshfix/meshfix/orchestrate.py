@@ -93,8 +93,17 @@ def run_chain(
     min_wall: float | None,
     strict: bool,
     seed: int,
+    expected_volume: float | None = None,
+    reference: trimesh.Trimesh | None = None,
 ) -> Outcome:
-    """Try each backend, validate its output, and pick a winner."""
+    """Try each backend, validate its output, and pick a winner.
+
+    ``reference`` is what fidelity is measured against, when that differs from
+    what the backends are fed — the shell case, where ``source`` is a thickened
+    copy whose two offset sheets largely end up *inside* the solid and so are
+    not on its boundary at all.
+    """
+    reference = source if reference is None else reference
     attempts: list[Attempt] = []
     warnings: list[str] = []
     workdir.mkdir(parents=True, exist_ok=True)
@@ -131,7 +140,7 @@ def run_chain(
 
         produced = load_mesh(result.output_path)
         diagnosis = analyze(produced)
-        metrics = compare(source, produced, seed=seed)
+        metrics = compare(reference, produced, seed=seed)
         validation = validate(
             diagnosis,
             expected_components=expected_components,
@@ -162,22 +171,37 @@ def run_chain(
             usable,
             key=lambda a: (a.n_hard_violations, a.hausdorff_two_sided or float("inf")),
         )
-        warnings.extend(_quality_warnings(best, source))
+        warnings.extend(_quality_warnings(best, expected_volume))
     return Outcome(attempts=attempts, best=best, warnings=warnings)
 
 
-def _quality_warnings(attempt: Attempt, source: trimesh.Trimesh) -> list[str]:
+def _quality_warnings(attempt: Attempt, expected_volume: float | None) -> list[str]:
     """Defects that pass every criterion but still matter to the user."""
     out: list[str] = []
     ratio = attempt.metrics.get("volume_ratio")
-    if ratio is not None and ratio < VOLUME_COLLAPSE_RATIO:
+    if ratio is None and expected_volume:
+        # `volume_ratio` is None whenever the source does not enclose a volume,
+        # which is precisely the shell case — and a shell is where a hollow
+        # result is most likely. A thickened sheet has a volume we know from
+        # first principles (its area times the wall we asked for), so the check
+        # survives instead of quietly lapsing.
+        produced = attempt.metrics.get("candidate_volume")
+        if produced is not None:
+            ratio = float(produced / expected_volume)
+    if ratio is None:
+        out.append(
+            "volume_check_skipped (neither the input nor the requested wall gives a "
+            "volume to compare against, so a hollow result would go unnoticed)"
+        )
+    elif ratio < VOLUME_COLLAPSE_RATIO:
         # An opening wider than the seal lets the outside flood reach the
         # interior, so the "solid" comes back as a thin shell wrapped around
         # the original surface. A8 cannot see this: the shell hugs the input,
         # so both Hausdorff directions stay small. Volume is the signal.
+        reference = "expected" if expected_volume else "input"
         out.append(
-            f"volume_collapsed (output is {ratio:.0%} of the input volume; an opening "
-            f"was probably wider than --seal, so the result is hollow)"
+            f"volume_collapsed (output is {ratio:.0%} of the {reference} volume; an "
+            f"opening was probably wider than --seal, so the result is hollow)"
         )
     floor = attempt.metrics.get("hausdorff_noise_floor")
     if floor and attempt.hausdorff_two_sided is not None:

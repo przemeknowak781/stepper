@@ -1,4 +1,5 @@
 import clsx from 'clsx'
+import { Layers } from 'lucide-react'
 import { useConverterStore } from '@/state/converterStore'
 import type { ConvertMethod } from '@/lib/geometry/convert'
 import type { SliceAxis } from '@/lib/geometry/sliceFrame'
@@ -60,8 +61,46 @@ export function ControlsPanel() {
   const showGrid = useConverterStore((s) => s.showGrid)
   const toggle = useConverterStore((s) => s.toggle)
 
+  const shell = useConverterStore((s) => s.report?.shell)
+
   return (
     <div className="space-y-5">
+      {shell?.isShell && (
+        <section className="space-y-2 rounded-md border border-warning-500/30 bg-warning-500/10 p-3">
+          <div className="flex items-start gap-2">
+            <Layers className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warning-500" />
+            <div className="space-y-1">
+              <h3 className="text-xs font-medium text-warning-500">This model is a surface</h3>
+              <p className="text-2xs leading-4 text-ink-3">
+                It has an open boundary and encloses almost no volume — an average of{' '}
+                <span className="font-mono">{shell.impliedThickness.toFixed(4)}</span> across{' '}
+                <span className="font-mono">{shell.area.toFixed(3)}</span> of area. There is no
+                correct solid until you say how thick the wall should be.
+              </p>
+            </div>
+          </div>
+
+          <Row label="Wall thickness" value={settings.shellThickness.toFixed(4)}>
+            <Slider
+              min={0}
+              max={shell.suggestedThickness * 4}
+              step={shell.suggestedThickness / 100}
+              value={settings.shellThickness}
+              onChange={(e) => update({ shellThickness: Number(e.target.value) })}
+            />
+          </Row>
+
+          {settings.shellThickness <= 0 && (
+            <button
+              onClick={() => update({ shellThickness: shell.suggestedThickness })}
+              className="w-full rounded border border-line bg-surface-3 px-2 py-1 text-2xs font-medium text-ink-2 transition-colors duration-fast hover:bg-surface-4"
+            >
+              Use {shell.suggestedThickness.toFixed(4)} (1% of the model)
+            </button>
+          )}
+        </section>
+      )}
+
       <section className="space-y-3">
         <h3 className="text-eyebrow">Conversion</h3>
 
