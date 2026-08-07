@@ -67,20 +67,23 @@ export function ExportPanel() {
                 </>
               )}
             </div>
-            {report.repair && (report.repair.filledHoles > 0 || report.repair.flippedTriangles > 0 || report.repair.removedDuplicate > 0) && (
+            {report.repair && (report.repair.filledHoles > 0 || report.repair.flippedTriangles > 0
+              || report.repair.removedDuplicate > 0 || report.repair.stitchedEdges > 0) && (
               <p className="mt-1.5 text-2xs leading-4 text-ink-4">
-                Repaired: {report.repair.filledHoles} hole(s) filled,{' '}
+                Repaired: {report.repair.stitchedEdges} T-junction(s) stitched,{' '}
+                {report.repair.filledHoles} hole(s) filled,{' '}
                 {report.repair.flippedTriangles} face(s) re-oriented,{' '}
                 {report.repair.removedDuplicate + report.repair.removedDegenerate} junk face(s) dropped
                 {report.repair.components > 1 ? `, ${report.repair.components} shells` : ''}.
               </p>
             )}
             {report.reconstructed && (
-              <p className="mt-1.5 text-2xs leading-4 text-ink-4">
-                Input was not repairable to a manifold
-                {report.repair && report.repair.openBoundaryLoops > 0
-                  ? ` (${report.repair.openBoundaryLoops} large opening(s))`
-                  : ''}; it was solidified (flood-fill volume) and sealed.
+              // Naming the blocking condition matters: "not repairable" on its
+              // own leaves the user with no idea what to change.
+              <p className="mt-1.5 text-2xs leading-4 text-warning-500">
+                Fell back to voxel reconstruction
+                {report.repair?.blockedBy ? `: ${report.repair.blockedBy}` : ''}. The exact
+                B-rep path needs a closed manifold.
               </p>
             )}
           </div>

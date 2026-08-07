@@ -9,10 +9,11 @@ import { triangulateFace } from './triangulate'
  * oriented 2-manifold so the faithful planar-merge path can run on it (exact,
  * economical) instead of always resorting to voxel reconstruction.
  *
- * Passes: weld → drop degenerate → drop duplicate → orient each connected
- * component consistently and flip it outward (by signed volume) → fill small
- * boundary holes by ear-clipping their loops.  `closed` reports whether the
- * result is a watertight, orientable manifold; if not, the caller solidifies.
+ * Passes: weld → drop degenerate → drop duplicate → stitch T-junctions →
+ * orient each connected component consistently and flip it outward (by signed
+ * volume) → fill small boundary holes by ear-clipping their loops.  `closed`
+ * reports whether the result is a watertight, orientable manifold; if not,
+ * `blockedBy` names the condition that stopped it and the caller solidifies.
  */
 export interface RepairOptions {
   weldTol?: number
@@ -24,11 +25,21 @@ export interface RepairOptions {
 export interface RepairReport {
   removedDegenerate: number
   removedDuplicate: number
+  /** Edges split to match a neighbour's subdivision (T-junctions). */
+  stitchedEdges: number
   flippedTriangles: number
   components: number
   filledHoles: number
   openBoundaryLoops: number
+  /** Edges still used by exactly one face after every pass. */
+  remainingBoundaryEdges: number
+  /** Edges still used by three or more faces after every pass. */
+  remainingNonManifoldEdges: number
+  /** True when neighbouring faces disagree about which side is out (non-orientable). */
+  orientationConflict: boolean
   closed: boolean
+  /** Empty when `closed`; otherwise why the mesh could not be repaired. */
+  blockedBy: string
 }
 
 export interface RepairedMesh {
@@ -100,6 +111,10 @@ export function repairMesh(
     }
     tris.length = out
   }
+
+  // --- Stitch T-junctions -------------------------------------------------
+  // Must run before the orientation pass, because it changes connectivity.
+  const stitchedEdges = stitchTJunctions(V, tris, Math.max(tol, size * 1e-5), size)
 
   // --- Consistent orientation per connected component --------------------
   const nT = tris.length / 3
@@ -225,12 +240,30 @@ export function repairMesh(
       if (l) l.push(t); else finalEdges.set(k, [t])
     }
   }
-  let closed = !inconsistent && tris.length > 0
-  if (closed) {
-    for (const owners of finalEdges.values()) {
-      if (owners.length !== 2) { closed = false; break }
-    }
+  let remainingBoundaryEdges = 0
+  let remainingNonManifoldEdges = 0
+  for (const owners of finalEdges.values()) {
+    if (owners.length === 1) remainingBoundaryEdges++
+    else if (owners.length > 2) remainingNonManifoldEdges++
   }
+  const closed =
+    !inconsistent &&
+    tris.length > 0 &&
+    remainingBoundaryEdges === 0 &&
+    remainingNonManifoldEdges === 0
+
+  // Saying only "not repairable" would be the "almost worked" state this
+  // pipeline is supposed to refuse. Name the condition that actually blocked it.
+  const reasons: string[] = []
+  if (tris.length === 0) reasons.push('no triangles left after cleanup')
+  if (remainingBoundaryEdges > 0) {
+    reasons.push(`${remainingBoundaryEdges} open edge(s) that could not be closed`)
+  }
+  if (remainingNonManifoldEdges > 0) {
+    reasons.push(`${remainingNonManifoldEdges} edge(s) shared by 3+ faces`)
+  }
+  if (inconsistent) reasons.push('faces disagree on which side is outside')
+  const blockedBy = closed ? '' : reasons.join('; ')
 
   return {
     vertices: V,
@@ -238,11 +271,16 @@ export function repairMesh(
     report: {
       removedDegenerate,
       removedDuplicate,
+      stitchedEdges,
       flippedTriangles,
       components,
       filledHoles,
       openBoundaryLoops,
+      remainingBoundaryEdges,
+      remainingNonManifoldEdges,
+      orientationConflict: inconsistent,
       closed,
+      blockedBy,
     },
   }
 }
@@ -259,4 +297,174 @@ function newellNormal(ring: number[], V: Float32Array): [number, number, number]
   const len = Math.hypot(nx, ny, nz)
   if (len < 1e-12) return null
   return [nx / len, ny / len, nz / len]
+}
+
+/**
+ * Split triangles whose boundary edge has other vertices lying ON it.
+ *
+ * This is the defect that keeps an obviously-solid CAD mesh from ever becoming
+ * a manifold. When each face of a part is triangulated independently — which
+ * is what CAD tessellation and most STEP/IGES exports produce — a long edge on
+ * one face may be subdivided on its neighbour. The two faces then share vertex
+ * *positions* but not *edges*, so welding cannot join them: every seam stays a
+ * pair of one-sided edges and each face becomes its own shell. A part with 49
+ * faces reports 49 shells and "not repairable", even though nothing is
+ * geometrically wrong with it.
+ *
+ * The fix is to re-triangulate the offending triangle as a fan through the
+ * vertices sitting on its edge, so the edge is subdivided to match its
+ * neighbour. Only splits are performed — no vertex moves and no geometry
+ * changes, so this cannot falsify the model.
+ *
+ * Repeated to a fixpoint, because splitting one edge can expose a T-junction
+ * on the sub-edges it creates. Returns the number of edges stitched.
+ */
+export function stitchTJunctions(
+  V: Float32Array,
+  tris: number[],
+  tol: number,
+  size: number,
+  maxRounds = 4,
+): number {
+  let stitchedTotal = 0
+
+  for (let round = 0; round < maxRounds; round++) {
+    const owners = new Map<number, number[]>()
+    for (let t = 0; t < tris.length / 3; t++) {
+      const a = tris[t * 3], b = tris[t * 3 + 1], c = tris[t * 3 + 2]
+      for (const [x, y] of [[a, b], [b, c], [c, a]] as const) {
+        const k = ekey(x, y)
+        const list = owners.get(k)
+        if (list) list.push(t); else owners.set(k, [t])
+      }
+    }
+    const boundary: number[] = []
+    for (const [k, list] of owners) if (list.length === 1) boundary.push(k)
+    if (boundary.length === 0) break
+
+    // The lookup grid is a coarse spatial bucket, deliberately NOT the size of
+    // the tolerance: sizing cells at `tol` makes the segment walk take one step
+    // per tolerance unit, which is hundreds of thousands of steps for a normal
+    // edge. It only has to be at least `tol` so a 3x3x3 probe still covers it.
+    const cell = Math.max(tol * 16, size / 256)
+    const grid = buildVertexGrid(V, cell)
+    const replaced = new Map<number, number[]>() // triangle id → replacement fan
+    let splits = 0
+
+    for (const key of boundary) {
+      const t = owners.get(key)![0]
+      if (replaced.has(t)) continue // one split per triangle per round
+      const lo = Math.floor(key / SHIFT)
+      const hi = key % SHIFT
+      const mids = verticesOnSegment(V, lo, hi, grid, cell, tol)
+      if (mids.length === 0) continue
+
+      // Locate the edge inside the triangle so the fan keeps its winding.
+      const a = tris[t * 3], b = tris[t * 3 + 1], c = tris[t * 3 + 2]
+      let p = -1, q = -1, r = -1
+      for (const [x, y, z] of [[a, b, c], [b, c, a], [c, a, b]] as const) {
+        if ((x === lo && y === hi) || (x === hi && y === lo)) { p = x; q = y; r = z; break }
+      }
+      if (p < 0) continue
+
+      // Order the inserted vertices along p → q.
+      const ordered = mids
+        .map(v => ({ v, t: segmentParam(V, p, q, v) }))
+        .sort((m, n) => m.t - n.t)
+        .map(m => m.v)
+
+      const fan: number[] = []
+      let previous = p
+      for (const m of ordered) { fan.push(r, previous, m); previous = m }
+      fan.push(r, previous, q)
+      replaced.set(t, fan)
+      splits++
+    }
+
+    if (splits === 0) break
+    stitchedTotal += splits
+
+    const rebuilt: number[] = []
+    for (let t = 0; t < tris.length / 3; t++) {
+      const fan = replaced.get(t)
+      if (fan) rebuilt.push(...fan)
+      else rebuilt.push(tris[t * 3], tris[t * 3 + 1], tris[t * 3 + 2])
+    }
+    tris.length = 0
+    for (const value of rebuilt) tris.push(value)
+  }
+  return stitchedTotal
+}
+
+/** Spatial hash of vertex indices, so an edge only tests nearby vertices. */
+function buildVertexGrid(V: Float32Array, cell: number): Map<string, number[]> {
+  const grid = new Map<string, number[]>()
+  const size = Math.max(cell, 1e-12)
+  for (let v = 0; v < V.length / 3; v++) {
+    const k = cellKey(V[v * 3], V[v * 3 + 1], V[v * 3 + 2], size)
+    const list = grid.get(k)
+    if (list) list.push(v); else grid.set(k, [v])
+  }
+  return grid
+}
+
+function cellKey(x: number, y: number, z: number, cell: number): string {
+  return `${Math.floor(x / cell)}_${Math.floor(y / cell)}_${Math.floor(z / cell)}`
+}
+
+/** Vertices lying strictly between `a` and `b`, within `tol` of the segment. */
+function verticesOnSegment(
+  V: Float32Array,
+  a: number,
+  b: number,
+  grid: Map<string, number[]>,
+  cell: number,
+  tol: number,
+): number[] {
+  const ax = V[a * 3], ay = V[a * 3 + 1], az = V[a * 3 + 2]
+  const dx = V[b * 3] - ax, dy = V[b * 3 + 1] - ay, dz = V[b * 3 + 2] - az
+  const lengthSq = dx * dx + dy * dy + dz * dz
+  if (lengthSq <= 0) return []
+  const length = Math.sqrt(lengthSq)
+
+  // Walk the segment in half-cell steps and collect the cells it passes through.
+  const seen = new Set<number>()
+  const found: number[] = []
+  const steps = Math.ceil(length / (cell * 0.5)) + 1
+  for (let s = 0; s <= steps; s++) {
+    const f = s / steps
+    const px = ax + dx * f, py = ay + dy * f, pz = az + dz * f
+    for (let ox = -1; ox <= 1; ox++)
+      for (let oy = -1; oy <= 1; oy++)
+        for (let oz = -1; oz <= 1; oz++) {
+          const list = grid.get(cellKey(px + ox * cell, py + oy * cell, pz + oz * cell, cell))
+          if (!list) continue
+          for (const v of list) {
+            if (v === a || v === b || seen.has(v)) continue
+            seen.add(v)
+            const t = segmentParam(V, a, b, v)
+            // Strictly interior, so an endpoint never counts as a T-junction.
+            if (t <= 0 || t >= 1) continue
+            const cx = ax + dx * t - V[v * 3]
+            const cy = ay + dy * t - V[v * 3 + 1]
+            const cz = az + dz * t - V[v * 3 + 2]
+            if (cx * cx + cy * cy + cz * cz <= tol * tol) found.push(v)
+          }
+        }
+  }
+  return found
+}
+
+/** Normalised position of vertex `v` projected onto segment a→b. */
+function segmentParam(V: Float32Array, a: number, b: number, v: number): number {
+  const dx = V[b * 3] - V[a * 3]
+  const dy = V[b * 3 + 1] - V[a * 3 + 1]
+  const dz = V[b * 3 + 2] - V[a * 3 + 2]
+  const lengthSq = dx * dx + dy * dy + dz * dz
+  if (lengthSq <= 0) return 0
+  return (
+    ((V[v * 3] - V[a * 3]) * dx +
+      (V[v * 3 + 1] - V[a * 3 + 1]) * dy +
+      (V[v * 3 + 2] - V[a * 3 + 2]) * dz) / lengthSq
+  )
 }
