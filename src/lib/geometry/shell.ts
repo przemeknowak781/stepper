@@ -39,11 +39,22 @@ export interface ShellDiagnosis {
  *
  * Matches `SHELL_SCORE_THRESHOLD` in meshfix. The score is the isoperimetric
  * quotient: a sphere scores 1 on `6*sqrt(pi)*V / A^1.5` and so 0 here, while a
- * sheet drives V to 0 and the score to 1. An open boundary is a precondition —
- * a closed mesh encloses volume by definition, and whether that volume is thin
- * is a wall-thickness question, not a "is this a solid" question.
+ * sheet drives V to 0 and the score to 1. It is only consulted for surfaces
+ * that bound no volume at all — see `MIN_RELATIVE_WALL`, which comes first,
+ * because a genuinely thin-walled part is thin and the quotient cannot tell it
+ * from a sheet.
  */
 export const SHELL_SCORE_THRESHOLD = 0.9
+
+/**
+ * Thinnest wall, as a fraction of the body diagonal, that still counts as one.
+ *
+ * 0.1% is 0.5mm on a 500mm part and 0.02mm on a 20mm one — below any wall a
+ * process can hold, and far above the rounding a zero-thickness surface
+ * produces (which is exactly 0). The gap either side is wide, so the number is
+ * not doing delicate work.
+ */
+const MIN_RELATIVE_WALL = 1e-3
 
 export function diagnoseShell(vertices: Float32Array, indices: Uint32Array | null): ShellDiagnosis {
   const triangles = indices ? indices.length / 3 : vertices.length / 9
@@ -103,10 +114,22 @@ export function diagnoseShell(vertices: Float32Array, indices: Uint32Array | nul
   for (const count of boundary.values()) if (count === 1) boundaryEdges++
 
   const quotient = area > 0 ? (6 * Math.sqrt(Math.PI) * Math.abs(volume)) / area ** 1.5 : 0
-  // A closed mesh encloses volume by definition, so an open boundary is a
-  // precondition. Whether a closed mesh's volume is *thin* is a wall-thickness
-  // question, not a "is this a solid at all" question.
-  const shellScore = boundaryEdges === 0 ? 0 : area > 0 ? 1 - Math.min(1, quotient) : 1
+  const impliedThickness = area > 0 ? Math.abs(volume) / area : 0
+
+  // The question is whether the surface bounds a body, and closedness alone
+  // cannot answer it: capping a sheet's outer rim makes it closed while it
+  // still bounds nothing. So the test is the wall the surface already implies.
+  // A part with a real wall — the 1.2mm skin of a moulded case, say — is a
+  // solid with defects, and asking its owner for a thickness would be asking
+  // for one it has, then adding it a second time.
+  const enclosesVolume = impliedThickness > diagonal * MIN_RELATIVE_WALL
+  const shellScore = enclosesVolume
+    ? 0
+    : boundaryEdges === 0
+      ? 1 // closed around nothing: a sheet whose rim was capped
+      : area > 0
+        ? 1 - Math.min(1, quotient)
+        : 1
 
   return {
     shellScore,
@@ -114,7 +137,7 @@ export function diagnoseShell(vertices: Float32Array, indices: Uint32Array | nul
     boundaryEdges,
     area,
     volume,
-    impliedThickness: area > 0 ? Math.abs(volume) / area : 0,
+    impliedThickness,
     suggestedThickness: diagonal * 0.01,
   }
 }

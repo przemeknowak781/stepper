@@ -79,9 +79,11 @@ export function ExportPanel() {
               )}
             </div>
             {report.repair && (report.repair.filledHoles > 0 || report.repair.flippedTriangles > 0
-              || report.repair.removedDuplicate > 0 || report.repair.stitchedEdges > 0) && (
+              || report.repair.removedDuplicate > 0 || report.repair.stitchedEdges > 0
+              || report.repair.droppedOverlaps > 0) && (
               <p className="mt-1.5 text-2xs leading-4 text-ink-4">
                 Repaired: {report.repair.stitchedEdges} T-junction(s) stitched,{' '}
+                {report.repair.droppedOverlaps} overlapping face(s) dropped,{' '}
                 {report.repair.filledHoles} hole(s) filled,{' '}
                 {report.repair.flippedTriangles} face(s) re-oriented,{' '}
                 {report.repair.removedDuplicate + report.repair.removedDegenerate} junk face(s) dropped

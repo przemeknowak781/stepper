@@ -19,7 +19,15 @@ Plenty of files that look like parts are not solids: an open surface exported
 from a surface modeller, a scan, or a generative model encloses no volume, and
 there is no correct solid for one until you say how thick the wall should be.
 
-Stepper detects this before converting and **asks** rather than guessing. Give it
+A part that *already has* a wall is not one of these, even when its surface is
+broken. Stepper repairs first and then asks whether what it has bounds a volume,
+because a 1.2 mm moulded skin looks exactly like a sheet to any thinness measure
+— and a model a few broken faces away from closed should be closed, not
+inflated. The reference test model is one of these: 84 non-manifold edges and 16
+open ones from a malformed side wall in the source file, repaired to a closed
+manifold and exported as 296 exact planar faces.
+
+For a genuine surface, Stepper **asks** rather than guessing. Give it
 a wall and it offsets the surface symmetrically, closes the rim, and converts the
 result — usually along the exact path, since a walled surface is a closed
 manifold. Leave it unset and nothing is exported, with the reason stated: a

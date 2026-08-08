@@ -166,3 +166,51 @@ function signedVolume(vertices: Float32Array, indices: Uint32Array): number {
   }
   return Math.abs(volume)
 }
+
+describe('a part that already has a wall', () => {
+  /**
+   * A hollow box: an outer skin and an inner one, joined at the rim. Its
+   * isoperimetric quotient is as extreme as a sheet's — that is what thin-walled
+   * means — so the score alone would call it a surface and ask for a thickness
+   * it already carries.
+   */
+  function hollowBox(outer = 10, wall = 0.2): { vertices: Float32Array; indices: Uint32Array } {
+    const verts: number[] = []
+    const idx: number[] = []
+    const addBox = (size: number, flip: boolean) => {
+      const base = verts.length / 3
+      const h = size / 2
+      for (const [x, y, z] of [
+        [-1,-1,-1],[1,-1,-1],[1,1,-1],[-1,1,-1],[-1,-1,1],[1,-1,1],[1,1,1],[-1,1,1],
+      ]) verts.push(x*h, y*h, z*h)
+      const quads = [
+        [0,3,2,1],[4,5,6,7],[0,1,5,4],[1,2,6,5],[2,3,7,6],[3,0,4,7],
+      ]
+      for (const [a,b,c,d] of quads) {
+        const q = flip ? [a,c,b,a,d,c] : [a,b,c,a,c,d]
+        for (const v of q) idx.push(base + v)
+      }
+    }
+    addBox(outer, false)
+    addBox(outer - 2 * wall, true)   // inner skin, wound inward
+    return { vertices: Float32Array.from(verts), indices: Uint32Array.from(idx) }
+  }
+
+  it('is not mistaken for a surface', () => {
+    const box = hollowBox()
+    const d = diagnoseShell(box.vertices, box.indices)
+    expect(d.boundaryEdges).toBe(0)
+    // 10^3 - 9.6^3 = 115.3 of material over 600 + 552.96 of skin.
+    expect(d.impliedThickness).toBeGreaterThan(0.09)
+    expect(d.isShell).toBe(false)
+  })
+
+  it('still catches a sheet whose rim has been capped shut', () => {
+    // Closed, but bounding nothing: the case that makes closedness alone a
+    // useless test once the repair pass runs first.
+    const sheet = flatSheet()
+    const capped = convertMeshToSolid(sheet.vertices, sheet.indices, DEFAULT_CONVERT_SETTINGS)
+    expect(capped.report.shell?.isShell).toBe(true)
+    expect(capped.report.shell?.impliedThickness).toBeCloseTo(0, 6)
+  })
+})

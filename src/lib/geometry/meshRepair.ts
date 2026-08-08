@@ -27,6 +27,8 @@ export interface RepairReport {
   removedDuplicate: number
   /** Edges split to match a neighbour's subdivision (T-junctions). */
   stitchedEdges: number
+  /** Faces removed as one half of a quad cut across both diagonals at once. */
+  droppedOverlaps: number
   flippedTriangles: number
   components: number
   filledHoles: number
@@ -52,7 +54,62 @@ const SHIFT = 33554432 // 2^25
 const ekey = (a: number, b: number) => (a < b ? a * SHIFT + b : b * SHIFT + a)
 const dkey = (a: number, b: number) => a * SHIFT + b // directed
 
+/**
+ * Repair, repeated until it stops making progress.
+ *
+ * One pass is not enough on real files and the reason is structural: dropping a
+ * pair of overlapping faces opens a hole, filling that hole can leave a patch
+ * overlapping something else, and only the next pass sees it. On the model this
+ * was written for the sequence is 84 non-manifold edges and 16 open ones ->
+ * 7 and 9 -> 5 and 0 -> 1 and 0 -> closed. Stopping after one pass reports a
+ * mesh that is merely closer, which the caller can only treat as a failure.
+ */
 export function repairMesh(
+  verticesIn: Float32Array,
+  indicesIn: Uint32Array | null,
+  options: RepairOptions = {},
+): RepairedMesh {
+  let result = repairOnce(verticesIn, indicesIn, options)
+  const total = { ...result.report }
+  for (let pass = 1; pass < MAX_REPAIR_PASSES && !result.report.closed; pass++) {
+    const next = repairOnce(result.vertices, result.indices, options)
+    // Only adopt a pass that leaves FEWER defects. Iterating without this test
+    // is not merely wasteful, it regresses: on a flat sheet whose rim the first
+    // pass had already capped, the next pass drops a coplanar overlap it
+    // created and reopens four edges that were closed. A repair that can end
+    // worse than it started is worse than one that stops early.
+    const better =
+      next.report.remainingNonManifoldEdges + next.report.remainingBoundaryEdges <
+      result.report.remainingNonManifoldEdges + result.report.remainingBoundaryEdges
+    if (!better) break
+    result = next
+    total.removedDegenerate += next.report.removedDegenerate
+    total.removedDuplicate += next.report.removedDuplicate
+    total.stitchedEdges += next.report.stitchedEdges
+    total.droppedOverlaps += next.report.droppedOverlaps
+    total.flippedTriangles += next.report.flippedTriangles
+    total.filledHoles += next.report.filledHoles
+  }
+  // Counters accumulate across passes; the state ones describe where it ended.
+  return {
+    ...result,
+    report: {
+      ...total,
+      components: result.report.components,
+      openBoundaryLoops: result.report.openBoundaryLoops,
+      remainingBoundaryEdges: result.report.remainingBoundaryEdges,
+      remainingNonManifoldEdges: result.report.remainingNonManifoldEdges,
+      orientationConflict: result.report.orientationConflict,
+      closed: result.report.closed,
+      blockedBy: result.report.blockedBy,
+    },
+  }
+}
+
+/** How many times to re-run before accepting the mesh cannot be closed. */
+const MAX_REPAIR_PASSES = 8
+
+function repairOnce(
   verticesIn: Float32Array,
   indicesIn: Uint32Array | null,
   options: RepairOptions = {},
@@ -115,6 +172,16 @@ export function repairMesh(
   // --- Stitch T-junctions -------------------------------------------------
   // Must run before the orientation pass, because it changes connectivity.
   const stitchedEdges = stitchTJunctions(V, tris, Math.max(tol, size * 1e-5), size)
+
+  // --- Drop quads that were triangulated across both diagonals ------------
+  // To a fixpoint: removing one overlapping pair can leave an edge with three
+  // owners down to a pair that is itself one of these.
+  let droppedOverlaps = 0
+  for (let round = 0; round < 8; round++) {
+    const dropped = recutDoubleDiagonalQuads(V, tris)
+    if (dropped === 0) break
+    droppedOverlaps += dropped
+  }
 
   // --- Consistent orientation per connected component --------------------
   const nT = tris.length / 3
@@ -313,6 +380,7 @@ export function repairMesh(
       removedDegenerate,
       removedDuplicate,
       stitchedEdges,
+      droppedOverlaps,
       flippedTriangles,
       components,
       filledHoles,
@@ -360,6 +428,176 @@ function newellNormal(ring: number[], V: Float32Array): [number, number, number]
  * Repeated to a fixpoint, because splitting one edge can expose a T-junction
  * on the sub-edges it creates. Returns the number of edges stitched.
  */
+/**
+ * Repair quads that were triangulated across BOTH diagonals at once.
+ *
+ * Two triangles hinged on a shared edge `P-Q`, coplanar, with their apexes on
+ * the same side of it, are not a fold and not a T-junction — they are the two
+ * halves of one quad cut on opposite diagonals: `(P,Q,W1)` and `(P,Q,W2)` where
+ * the intended surface is the quad `P,Q,W1,W2`. Such a pair overlaps over half
+ * the quad and leaves the other half as a hole, and the shared edge picks up a
+ * third owner, so it reads as non-manifold.
+ *
+ * Real files contain this. The model this was written for is a surface export
+ * whose side-wall band emits `(P,Q,Q+d)` and `(P,Q,P+d)` for every rim edge
+ * instead of `(P,Q,Q+d)` and `(P,Q+d,P+d)`: 84 non-manifold edges and 16
+ * unfillable boundary edges, all from one wrong index. Splitting the
+ * non-manifold edges apart — the textbook repair — would faithfully preserve
+ * both the overlap and the hole; re-cutting the quad removes both.
+ *
+ * Conservative by construction: it fires only when the four corners are
+ * coplanar, the apexes splay the same way, and one of the two orderings gives a
+ * simple (non-self-crossing) quad. Anything else is left alone, because a
+ * genuine three-surface junction must not be silently rewritten.
+ */
+function recutDoubleDiagonalQuads(V: Float32Array, tris: number[]): number {
+  const edgeTris = new Map<number, number[]>()
+  for (let t = 0; t < tris.length / 3; t++) {
+    for (let e = 0; e < 3; e++) {
+      const a = tris[t * 3 + e]
+      const b = tris[t * 3 + ((e + 1) % 3)]
+      const key = ekey(a, b)
+      const list = edgeTris.get(key)
+      if (list) list.push(t)
+      else edgeTris.set(key, [t])
+    }
+  }
+
+  const apexOf = (t: number, a: number, b: number): number => {
+    for (let i = 0; i < 3; i++) {
+      const v = tris[t * 3 + i]
+      if (v !== a && v !== b) return v
+    }
+    return -1
+  }
+  const dead = new Set<number>()
+  let recut = 0
+
+  for (const [key, owners] of edgeTris) {
+    if (owners.length < 3) continue
+    const a = Math.floor(key / SHIFT)
+    const b = key % SHIFT
+    const live = owners.filter((t) => !dead.has(t))
+    if (live.length < 2) continue
+
+    for (let i = 0; i < live.length; i++) {
+      for (let j = i + 1; j < live.length; j++) {
+        const t1 = live[i]
+        const t2 = live[j]
+        if (dead.has(t1) || dead.has(t2)) continue
+        const w1 = apexOf(t1, a, b)
+        const w2 = apexOf(t2, a, b)
+        if (w1 < 0 || w2 < 0 || w1 === w2) continue
+        const order = simpleQuadOrder(V, a, b, w1, w2)
+        if (!order) continue
+        dead.add(t1)
+        dead.add(t2)
+        recut++
+      }
+    }
+  }
+  if (dead.size) {
+    let out = 0
+    for (let t = 0; t < tris.length / 3; t++) {
+      if (dead.has(t)) continue
+      tris[out] = tris[t * 3]; tris[out + 1] = tris[t * 3 + 1]; tris[out + 2] = tris[t * 3 + 2]
+      out += 3
+    }
+    tris.length = out
+  }
+  return recut
+}
+
+/**
+ * Order `a, b, w1, w2` into a simple planar quad, or return null.
+ *
+ * Requires the four points to be coplanar and both apexes to sit on the same
+ * side of the edge `a-b` — the signature of the double-diagonal cut. Of the two
+ * possible orderings exactly one can be simple; a self-crossing result means
+ * these triangles are not two halves of a quad and must be left alone.
+ */
+function simpleQuadOrder(
+  V: Float32Array,
+  a: number,
+  b: number,
+  w1: number,
+  w2: number,
+): [number, number, number, number] | null {
+  const at = (v: number): [number, number, number] => [V[v * 3], V[v * 3 + 1], V[v * 3 + 2]]
+  const A = at(a)
+  const B = at(b)
+  const W1 = at(w1)
+  const W2 = at(w2)
+
+  const sub = (p: number[], q: number[]) => [p[0] - q[0], p[1] - q[1], p[2] - q[2]]
+  const cross = (p: number[], q: number[]) => [
+    p[1] * q[2] - p[2] * q[1],
+    p[2] * q[0] - p[0] * q[2],
+    p[0] * q[1] - p[1] * q[0],
+  ]
+  const dot = (p: number[], q: number[]) => p[0] * q[0] + p[1] * q[1] + p[2] * q[2]
+  const len = (p: number[]) => Math.hypot(p[0], p[1], p[2])
+
+  const edge = sub(B, A)
+  const e1 = sub(W1, A)
+  const e2 = sub(W2, A)
+  const n1 = cross(edge, e1)
+  const n2 = cross(edge, e2)
+  const scale = len(edge) * Math.max(len(e1), len(e2))
+  if (scale === 0) return null
+
+  // Coplanar: the two triangle normals must be parallel. Relative to the edge
+  // and apex lengths, so it means the same thing at any model scale.
+  if (len(cross(n1, n2)) > scale * scale * COPLANAR_TOLERANCE) return null
+  // Same side: a fold has the apexes splaying opposite ways, and folds are a
+  // different defect that this repair must not touch.
+  const perp = (e: number[]) => sub(e, edge.map((c) => (c * dot(e, edge)) / dot(edge, edge)))
+  const p1 = perp(e1)
+  const p2 = perp(e2)
+  if (dot(p1, p2) <= 0) return null
+
+  // Project onto the plane's dominant axes and test both orderings.
+  const normal = n1.map((c) => Math.abs(c))
+  const drop = normal[0] >= normal[1] ? (normal[0] >= normal[2] ? 0 : 2) : normal[1] >= normal[2] ? 1 : 2
+  const keep = [0, 1, 2].filter((i) => i !== drop)
+  const flat = (p: number[]): [number, number] => [p[keep[0]], p[keep[1]]]
+
+  for (const [x, y] of [
+    [w1, w2],
+    [w2, w1],
+  ]) {
+    const quad: [number, number][] = [flat(A), flat(B), flat(at(x)), flat(at(y))]
+    if (isSimpleQuad(quad)) return [a, b, x, y]
+  }
+  return null
+}
+
+/** True when the four corners form a non-self-crossing polygon. */
+function isSimpleQuad(q: [number, number][]): boolean {
+  // A quad self-crosses exactly when one pair of opposite sides intersects.
+  return !segmentsCross(q[0], q[1], q[2], q[3]) && !segmentsCross(q[1], q[2], q[3], q[0])
+}
+
+function segmentsCross(
+  p1: [number, number],
+  p2: [number, number],
+  p3: [number, number],
+  p4: [number, number],
+): boolean {
+  const side = (a: [number, number], b: [number, number], c: [number, number]) =>
+    Math.sign((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]))
+  const d1 = side(p1, p2, p3)
+  const d2 = side(p1, p2, p4)
+  const d3 = side(p3, p4, p1)
+  const d4 = side(p3, p4, p2)
+  // Touching at an endpoint (a zero) is not a crossing — adjacent quad sides
+  // legitimately share corners.
+  return d1 !== 0 && d2 !== 0 && d3 !== 0 && d4 !== 0 && d1 !== d2 && d3 !== d4
+}
+
+/** Relative tolerance for calling two triangle normals parallel. */
+const COPLANAR_TOLERANCE = 1e-4
+
 export function stitchTJunctions(
   V: Float32Array,
   tris: number[],

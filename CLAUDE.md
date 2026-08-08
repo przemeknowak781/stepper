@@ -13,14 +13,21 @@ See `README.md` for the user-facing overview.
 
 ## A surface is not a solid (`src/lib/geometry/shell.ts`)
 
-Checked **before** any method runs, because it decides whether the question is
-answerable at all. `diagnoseShell` welds by position (an STL soup shares no
-indices, so an un-welded edge census reads either "every edge is a boundary" or
-"none is"), counts single-use edges, and scores the isoperimetric quotient
-`1 - 6*sqrt(pi)*|V| / A^1.5`. A closed mesh scores 0 by definition; a sheet
-drives V to 0 and scores 1. At or above `SHELL_SCORE_THRESHOLD` (0.9) the input
-is a surface, and there is **no correct solid for it** — the answer depends on a
-wall thickness only the user knows.
+Checked **after `repairMesh`, not before** — see the ordering note below.
+`diagnoseShell` welds by position (an STL soup shares no indices, so an
+un-welded edge census reads either "every edge is a boundary" or "none is"),
+counts single-use edges, and asks first whether the surface bounds anything:
+`|V| / A` is the wall it already implies, and above `MIN_RELATIVE_WALL` (0.1% of
+the diagonal) it is a solid, full stop. Only a surface bounding *nothing* is
+scored by the isoperimetric quotient `1 - 6*sqrt(pi)*|V| / A^1.5`, at or above
+`SHELL_SCORE_THRESHOLD` (0.9).
+
+Closedness alone cannot decide this, in either direction. A thin-walled part is
+as extreme on the quotient as a sheet — that is what thin-walled means — so the
+score would ask a 1.2 mm moulded case for a wall it already has and then add it
+twice. And once the repair runs first, a sheet whose rim it capped is *closed*
+while still bounding nothing, so "closed ⇒ solid" fails the other way. The
+implied wall separates both cases and the gap either side is wide.
 
 So `convertMeshToSolid` refuses: with `shellThickness === 0` it returns an empty
 solid plus the diagnosis, and the UI asks for the wall. Solidifying anyway would
@@ -53,10 +60,26 @@ the **exact** path, not voxels.
   → 129 faces from 516 triangles. Requires a closed 2-manifold input; otherwise
   it auto-falls back to voxel reconstruction, then planarises the repaired shell.
   Knob: `planarToleranceDeg` (coplanar merge angle).
-  The faithful path first runs `repairMesh` (`src/lib/geometry/meshRepair.ts`):
-  weld → drop degenerate/duplicate → orient each component consistently and flip
-  it outward by signed volume → ear-clip-fill small boundary holes. If that
-  yields a closed 2-manifold it planarises exactly; otherwise it solidifies.
+  `repairMesh` (`src/lib/geometry/meshRepair.ts`) runs **first, for every
+  method**, and its result is what shell detection and conversion both see:
+  weld → drop degenerate/duplicate → stitch T-junctions → drop double-diagonal
+  overlaps → orient each component consistently and flip it outward by signed
+  volume → ear-clip-fill boundary holes. If that yields a closed 2-manifold the
+  faithful path planarises exactly; otherwise it solidifies.
+
+  Two properties are load-bearing. It **iterates**: dropping an overlap opens a
+  hole, filling that hole can leave a patch overlapping something else, and only
+  the next pass sees it — the reference model goes 84 non-manifold + 16 open →
+  7+9 → 5+0 → 1+0 → closed. And a pass is adopted **only when it leaves fewer
+  defects**, because iterating without that test regresses a capped flat sheet
+  from closed back to four open edges.
+
+  `recutDoubleDiagonalQuads` handles a defect real exporters emit: two coplanar
+  triangles hinged on a shared edge with their apexes on the same side are one
+  quad cut on *both* diagonals — they overlap over half of it and leave the rest
+  open. Dropping the pair and letting the hole filler rebuild beats re-cutting
+  it, which orphans the neighbours of the edge it drops. It only ever inspects
+  edges with 3+ owners, so it cannot touch a valid mesh.
 - **`voxel` / `smooth`** → robust reconstruction, to *repair* broken meshes.
   Volume is defined by `solidifyToOccupancy` (`src/lib/geometry/solidify.ts`),
   NOT the fragile even-odd scanline: dense point-sample the surface into a

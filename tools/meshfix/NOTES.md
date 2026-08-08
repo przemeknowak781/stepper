@@ -535,3 +535,28 @@ own output, and §9.1/§10.1 are two reminders of what that check catches.
 trimesh wheel, all fetched only after the user opts in — the worker chunk is
 151 KB and the main bundle grew by 6 KB. Dropping SciPy (§8) is what keeps that
 number where it is; with it the download would be roughly double.
+
+---
+
+## 12. A10 has the same blind spot Stepper just lost
+
+Stepper found that its shell test — the one modelled on `_shell_score` — called
+a thin-walled part a surface. `meshfix` still does. The rule "closed ⇒ 0, else
+thinness" (§3.2) cannot separate a 1.2 mm moulded skin from a zero-thickness
+sheet, because a thin-walled part *is* thin by every measure the quotient sees;
+what separates them is that one bounds a volume and the other bounds nothing.
+
+The model in §9 is exactly this case, and A10 refuses it as a shell. That
+refusal is not wrong in its own terms — the mesh really is open, with 67
+boundary edges — but the reason offered ("this is a surface, supply a wall") is
+the wrong diagnosis: the part has a wall of `|V|/A = 0.0012`, and the 67 open
+edges are a defect. Stepper now repairs first and measures the implied wall
+before deciding; on that path the same file closes to a manifold and needs no
+thickness at all.
+
+Porting the fix here is not a one-line change, because `diagnose` must not
+mutate its input (SPEC 12) — so it cannot repair first the way Stepper does.
+The honest options are to report the implied wall alongside `shell_score` and
+let A10's message name it, or to run the check against a repaired copy and say
+so in the report. Recorded rather than silently fixed, because a criterion that
+refuses for a reason that is not the real one is worse than one that fails.

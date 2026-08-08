@@ -4,7 +4,7 @@ import { occupancyToSolid, taubinSmoothBounded, type SolidMesh } from './slicedS
 import { marchingCubesFromVoxelDensity } from './marchingCubes'
 import { planarizeMesh, type PlanarBrep } from './planarize'
 import { triangulateFace } from './triangulate'
-import { repairMesh, type RepairReport } from './meshRepair'
+import { repairMesh, type RepairedMesh, type RepairReport } from './meshRepair'
 import { solidifyToOccupancy, paddedGridFor } from './solidify'
 import { diagnoseShell, thickenShell, type ShellDiagnosis } from './shell'
 
@@ -110,7 +110,17 @@ export function convertMeshToSolid(
   settings: ConvertSettings,
 ): ConvertResult {
   const inputTriangles = indices ? indices.length / 3 : vertices.length / 9
-  const shell = diagnoseShell(vertices, indices)
+
+  // Repair BEFORE deciding whether this is a surface. The shell score is driven
+  // by the open boundary, and a part can be one weld and a few broken faces away
+  // from closed — 16 open edges out of 1728 is a defect, not a design intent.
+  // Asking such a model for a wall thickness is asking for one it already has,
+  // and then adding it a second time. If the repair closes the mesh there is
+  // nothing to decide: a closed surface encloses a volume by definition.
+  const repaired = repairMesh(vertices, indices)
+  // A closed mesh scores 0 by definition, so this answers "shell" only for
+  // surfaces the repair genuinely could not close.
+  const shell = diagnoseShell(repaired.vertices, repaired.indices)
 
   // A surface has no solid form until someone says how thick it is. With a wall
   // supplied, thicken first and convert the resulting solid; without one, carry
@@ -153,7 +163,7 @@ export function convertMeshToSolid(
     }
   }
 
-  return convertCore(vertices, indices, settings, inputTriangles)
+  return convertCore(repaired.vertices, repaired.indices, settings, inputTriangles, repaired)
 }
 
 function convertCore(
@@ -161,9 +171,10 @@ function convertCore(
   indices: Uint32Array | null,
   settings: ConvertSettings,
   inputTriangles: number,
+  prerepaired?: RepairedMesh,
 ): ConvertResult {
   if (settings.method === 'faithful') {
-    const repaired = repairMesh(vertices, indices)
+    const repaired = prerepaired ?? repairMesh(vertices, indices)
     if (repaired.report.closed) {
       const planar = planarizeMesh(repaired.vertices, repaired.indices, {
         angleToleranceDeg: settings.planarToleranceDeg,
