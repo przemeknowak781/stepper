@@ -17,9 +17,18 @@ permissions:
   pages: write
   id-token: write
 
-# A new deploy supersedes any in-flight one so we never publish a stale build.
+# Grouped PER BRANCH, not globally. A single `pages` group looks right — one
+# deploy stream — but only the default branch's run reaches the deploy job, so a
+# push to the other branch was cancelling the only run that could actually
+# publish. Pushing both branches for the same commit (branch first, then main)
+# therefore deployed nothing at all, while both runs reported green: the killed
+# one as "cancelled", the survivor as a build whose deploy step was skipped.
+#
+# Per-ref grouping keeps the property that matters — a newer push to a branch
+# supersedes its own in-flight build — without one branch interfering with the
+# other. Only one branch can deploy, so this cannot produce concurrent deploys.
 concurrency:
-  group: pages
+  group: pages-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
