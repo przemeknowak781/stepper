@@ -30,6 +30,23 @@ one voxel thick, stair-stepped and nothing like the input. That looks like a
 conversion bug. It is really an impossible question answered with an invented
 number.
 
+## Deep repair, in the browser
+
+Some meshes are beyond a topological fix — heavy self-intersection, dozens of
+loose components, windings that disagree. For those, Stepper can run the full
+`meshfix` criteria (A1–A10) in the browser on CPython compiled to WebAssembly,
+and rebuild a guaranteed watertight, 2-manifold, intersection-free solid.
+
+It is opt-in: the runtime is a ~16 MB one-time download and takes a few seconds
+to boot, so nothing is fetched until you click. The same tool also runs
+natively from `tools/meshfix` — as a CLI, or as a local service Stepper talks
+to — and both routes call the same Python entry point, so they agree by
+construction rather than by review.
+
+Building `tools/meshfix/scripts/build_aw3.sh` adds CGAL alpha wrapping to the
+native paths, which follows the surface instead of quantising it: on the test
+model, 5 794 faces against the voxel backend's 120 024, and closer to the input.
+
 ## Conversion: faithful first, reconstruct only when forced
 
 The goal is an **excellent, economical, exact** solid — not a heavy
@@ -98,9 +115,12 @@ src/lib/geometry/   slicer + reconstruction (ported from Optimizer) + convert.ts
 src/lib/step/       STEP AP214 exporter
 src/lib/stl/        binary/ASCII STL parse + write
 src/lib/loaders/    STL/OBJ/GLTF/GLB loading
+src/lib/meshfix/    clients for meshfix: local service + in-browser worker
+src/workers/        meshfix on Pyodide (lazy, opt-in)
 src/state/          zustand converter store
 src/hooks/          upload, sample, debounced conversion
-src/components/     R3F viewer + control / export panels
+src/components/     R3F viewer + control / export / repair panels
+tools/meshfix/      the Python repair tool (CLI, service, CGAL alpha wrap)
 ```
 
 ## Deployment (GitHub Pages)

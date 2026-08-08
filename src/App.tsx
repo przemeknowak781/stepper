@@ -7,6 +7,7 @@ import { Viewer } from '@/components/viewer/Viewer'
 import { UploadZone } from '@/components/panels/UploadZone'
 import { ControlsPanel } from '@/components/panels/ControlsPanel'
 import { ExportPanel } from '@/components/panels/ExportPanel'
+import { RepairPanel } from '@/components/panels/RepairPanel'
 import { Button } from '@/components/ui/Button'
 
 function Header() {
@@ -74,6 +75,7 @@ export function App() {
             <div className="space-y-6">
               <ControlsPanel />
               <ExportPanel />
+              <RepairPanel />
             </div>
           </aside>
         )}

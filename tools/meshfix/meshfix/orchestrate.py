@@ -19,7 +19,7 @@ from pathlib import Path
 import trimesh
 
 from .backends import RunContext, get_backend
-from .diagnose import Diagnosis, analyze
+from .diagnose import SHELL_SCORE_THRESHOLD, Diagnosis, analyze
 from .io import load_mesh, save_mesh
 from .metrics import compare
 from .validate import ValidationResult, validate
@@ -68,6 +68,63 @@ class Outcome:
     @property
     def accepted(self) -> bool:
         return bool(self.best and self.best.passed)
+
+
+@dataclass
+class ShellPlan:
+    """What thickening an open shell changes about the run that follows."""
+
+    mesh: trimesh.Trimesh
+    #: What fidelity is measured against — the *original* surface, not the wall.
+    reference: trimesh.Trimesh
+    expected_volume: float | None
+    deviation_budget: float
+    warning: str | None = None
+
+    @property
+    def thickened(self) -> bool:
+        return self.warning is not None
+
+
+def prepare_shell(
+    mesh: trimesh.Trimesh,
+    *,
+    shell_score: float,
+    shell_thickness: float | None,
+    max_deviation: float,
+) -> ShellPlan:
+    """Give an open shell its wall, and adjust what the result is judged against.
+
+    Lives here rather than in the CLI so the HTTP service and the browser
+    runtime cannot drift from it — they had, and the service was still measuring
+    fidelity against the thickened copy after the CLI stopped.
+
+    Three things change together, and getting any one of them wrong misreports
+    the result (NOTES.md §9):
+
+    * fidelity measures against the **original** surface, since where a sheet
+      folds tighter than its new wall the two offset copies end up inside the
+      solid rather than on its boundary;
+    * the wall is added to the deviation budget, because it is deviation the
+      user asked for — up to ``MAX_MITER`` times half the thickness, which is as
+      far as the offset can legitimately move a surface;
+    * the volume a hollow-result check compares against becomes area times
+      thickness, the only volume reference a shell has.
+    """
+    from .postprocess import MAX_MITER, thicken_shell
+
+    if shell_thickness is None or shell_score < SHELL_SCORE_THRESHOLD:
+        return ShellPlan(
+            mesh=mesh, reference=mesh, expected_volume=None, deviation_budget=max_deviation
+        )
+
+    return ShellPlan(
+        mesh=thicken_shell(mesh, shell_thickness),
+        reference=mesh,
+        expected_volume=float(mesh.area) * shell_thickness,
+        deviation_budget=max_deviation + shell_thickness / 2.0 * MAX_MITER,
+        warning=f"shell_thickened (thickness={shell_thickness})",
+    )
 
 
 def build_chain(verdict: str, backend: str, fallback_chain: str | None) -> list[str]:

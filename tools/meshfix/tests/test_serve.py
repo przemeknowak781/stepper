@@ -9,6 +9,7 @@ import urllib.request
 
 import pytest
 
+from meshfix.backends.alphawrap import find_binary
 from meshfix.io import save_mesh
 from meshfix.serve import serve_in_thread
 from tests.fixtures.generate import build
@@ -43,8 +44,13 @@ def test_health_lists_backends(service):
     data = json.loads(urllib.request.urlopen(f"{service}/api/health", timeout=10).read())
     assert data["service"] == "meshfix"
     assert data["backends"]["voxel"]["available"] is True
-    # alphawrap is not built here, and the service says so rather than hiding it.
-    assert data["backends"]["alphawrap"]["available"] is False
+    # alphawrap depends on a binary that may or may not have been built. Either
+    # way the service reports the truth, with a reason when it is missing —
+    # rather than omitting the backend and leaving the client to guess.
+    alphawrap = data["backends"]["alphawrap"]
+    assert alphawrap["available"] is (find_binary() is not None)
+    if not alphawrap["available"]:
+        assert "build_aw3" in alphawrap["reason"]
 
 
 def test_repair_returns_a_watertight_solid(service, tmp_path):

@@ -128,6 +128,30 @@ approximated by their edge-vertex polygon (no NURBS evaluation).
   original (ghost wireframe) and the converted solid; it is NOT the heavy
   Optimizer Scene (which is tied to FEM/region/BC domain state).
 
+## meshfix in the browser (`src/workers/meshfix.worker.ts`)
+
+Opt-in deep repair, CPython-on-wasm via Pyodide. It calls
+`meshfix.serve._process` — the **same** entry point as `meshfix serve` — and the
+`.py` files are bundled from `tools/meshfix/meshfix/` with `import.meta.glob`
+and written into the wasm filesystem, so there is one implementation of the
+criteria, not a TypeScript re-derivation that drifts. `src/lib/meshfix/browser.ts`
+fronts the worker with the same `RepairResponse` shape as the HTTP client.
+
+Load-bearing details, all carried over from Optimizer, which hit each in
+production first: Pyodide's distribution is **self-hosted** under
+`public/pyodide/` (`scripts/vendor-pyodide.mjs`, run by `pnpm build`) because the
+npm package derives `indexURL` from its own module location, which Vite
+relocates; the numpy/micropip **wheels must move too**, since `pyodide-lock.json`
+names them relative to that same `indexURL`; `worker: {format: 'es'}` because
+Pyodide's graph needs code-splitting; `optimizeDeps: {exclude: ['pyodide']}` for
+the dev server only.
+
+`alphawrap` is a native binary and is absent in the browser — the chain is
+`voxel` alone. Verification, not repair, is the cost there: the backend runs in
+about a second while A5 over the cuberille output takes 15–99 s depending on
+grid (NOTES.md §11.2), which is why the panel passes the conversion grid
+straight through rather than multiplying it.
+
 ## Conventions
 
 - Design tokens in `tailwind.config.ts` + `src/index.css` (copied from Optimizer):

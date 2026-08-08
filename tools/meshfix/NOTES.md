@@ -432,3 +432,106 @@ NetworkX or SciPy — the two dependencies §8 dropped. The path died with
 `ModuleNotFoundError` the first time a real shell reached it, because **nothing
 in the suite enforced the drop**. `tests/test_postprocess.py` now runs the
 thickening path with both modules blocked from import.
+
+---
+
+## 10. Alpha wrapping (M4): the backend that made A5 honest
+
+`cpp/aw3.cpp` + `scripts/build_aw3.sh` build a small CGAL binary; the backend
+shells out to it. A separate process rather than a Python binding because CGAL's
+own SWIG bindings do not expose `alpha_wrap_3`, and writing one would turn an
+*optional* backend into a compile-time dependency of the whole tool. Absent
+binary → `available()` returns the build hint, the chain falls through to
+`voxel`, and the report says so (change C14).
+
+Two implementation notes. The input is read as a polygon **soup**, not a mesh:
+this backend is reached for files whose connectivity is broken, and requiring a
+valid mesh to read them would refuse exactly what it exists to fix. And
+`repair_polygon_soup` runs first, because an STL stores every triangle's corners
+separately — without merging them the wrap has to rediscover the surface.
+
+On the §9 model (walled to 0.01) it is decisive:
+
+| backend | faces | verdict |
+|---|---|---|
+| voxel @ res 300 | 120 024 | accepted, A8 soft-failed at 0.0129 |
+| **alphawrap** | **5 794** | **accepted, A8 passed at 0.0108** |
+
+Same body, 20× fewer faces, and closer to the input — because a wrap follows the
+surface where a cuberille quantises it.
+
+### 10.1 It also exposed a second scale bug in A5
+
+The wrap is *guaranteed* intersection-free, and meshfix reported 2 intersecting
+faces in it. The pair sat **1e-11 apart** at coordinates near 0.1 — 700× below
+the float32 spacing the STL round trip stores them at — and did not overlap in
+plane at all.
+
+Cause: coplanarity was decided from the angle between the normals alone
+(`|n1 x n2| <= 1e-9`), and this pair came in at 3.1e-9, just missing it. The
+crossing-chord branch then ran, where every vertex within `eps` of the other
+plane counts as lying on it — so the "chord" became the triangle's whole extent,
+and any two near-coincident triangles appeared to overlap.
+
+Two changes. Coplanarity is now decided by the **distances** as well as the
+angle: if every vertex of either triangle is within tolerance of the other's
+plane, the chord math has no chord to find and the 2D overlap test answers
+instead (correctly: no overlap). And the tolerance is floored at
+`float32_ulp(coordinate)`, because an overlap shallower than one ulp is a
+property of the file format, not the geometry — the same argument that floors
+`weld_tolerance` (change C9).
+
+Together with §9.1 this is the second time A5 was measuring something other than
+the mesh. Both were absolute epsilons applied to scale-dependent quantities.
+
+---
+
+## 11. Running in the browser (Pyodide): what it actually took
+
+Stepper loads meshfix in a Web Worker on CPython-to-wasm
+(`src/workers/meshfix.worker.ts`). It calls `meshfix.serve._process` — the same
+entry point the HTTP service uses — so the browser and the local service cannot
+give different answers. Verified in headless Chromium against the §9 model: the
+browser reports the identical diagnosis (67 boundary edges, 59 non-manifold,
+147 self-intersecting, 80 degenerate, 58 components) and the identical seven
+failed criteria.
+
+The `.py` files are bundled as source and written into the wasm filesystem, so
+there is one implementation of the criteria rather than a TypeScript
+re-derivation that drifts. `alphawrap` is a native binary and is simply absent
+there; the chain is `voxel` alone and the report says so.
+
+### 11.1 A portability bug the 64-bit host could never show
+
+`np.repeat` takes its counts as `intp`, which is **32 bits under Emscripten**.
+Every repeat count in `_candidate_pairs` was int64 by default, so the broad
+phase died with "cannot cast int64 to int32 safely" the first time it ran in
+Pyodide, while passing on the host. Cast at the three sites that feed `repeat`.
+
+### 11.2 Verification costs far more than repair
+
+Measured on the §9 model, per resolution:
+
+| grid | output faces | backend | `analyze(output)` | Hausdorff | total |
+|---|---|---|---|---|---|
+| 96 | 17 032 | 0.24 s | 14.6 s | 14.9 s | 30.5 s |
+| 128 | 29 312 | 0.35 s | 26.0 s | 12.0 s | 38.7 s |
+| 256 | 113 744 | 1.37 s | **98.9 s** | 12.1 s | 116.9 s |
+
+The backend never exceeds 1.4 s. What dominates is A5 over the *output*, whose
+face count grows with the cube of the resolution — a cuberille is face-heavy by
+construction. Hausdorff is flat (a fixed 50 000 samples).
+
+Consequence for the UI: the repair panel passes the conversion grid straight
+through instead of the 4x it used to, and reports the elapsed time. On this
+model that is 24 s instead of 113 s for the same accepted result. Special-casing
+"a cuberille cannot self-intersect, skip A5" would be faster still and is
+exactly the assumption SPEC 15 forbids — the backend does not get to certify its
+own output, and §9.1/§10.1 are two reminders of what that check catches.
+
+### 11.3 Payload
+
+16 MB self-hosted under `public/pyodide/` (9.6 MB of it the wasm), plus a 0.7 MB
+trimesh wheel, all fetched only after the user opts in — the worker chunk is
+151 KB and the main bundle grew by 6 KB. Dropping SciPy (§8) is what keeps that
+number where it is; with it the download would be roughly double.

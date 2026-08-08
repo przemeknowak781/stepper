@@ -10,3 +10,8 @@ tools/meshfix/**/__pycache__/
 tools/meshfix/.pytest_cache/
 tools/meshfix/tests/fixtures/data/
 tools/meshfix/*.egg-info/
+tools/meshfix/cpp/build/
+tools/meshfix/meshfix/bin/
+
+# Pyodide distribution, copied out of node_modules by scripts/vendor-pyodide.mjs
+public/pyodide/

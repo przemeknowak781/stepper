@@ -88,6 +88,48 @@ def test_selfintersection_verdict_does_not_depend_on_model_scale(scale):
     assert analyze(tangled).n_selfintersecting_faces > 0
 
 
+def test_faces_closer_together_than_float32_are_not_an_intersection():
+    """Two triangles a hair apart, not overlapping in plane, must read as clean.
+
+    A mesh round-trips through binary STL, which stores float32, so a gap of
+    1e-11 at coordinates near 0.1 is 700x under the spacing the file can even
+    express. The old code decided coplanarity from the angle between the normals
+    alone; these two just missed that threshold, went down the crossing-chord
+    branch, and every vertex within eps of the plane was counted as lying on it
+    — turning the "chord" into the whole triangle and any two such triangles
+    into an overlap.
+    """
+    import numpy as np
+
+    from meshfix.selfintersect import self_intersecting_faces
+
+    # Side by side in x, 1e-11 apart in z: no shared vertex, no in-plane overlap.
+    vertices = np.array([
+        [-0.0959, 0.0004, 0.00046],
+        [-0.0923, 0.0016, 0.00046],
+        [-0.0960, 0.0061, 0.00046],
+        [-0.0858, 0.0118, 0.00046 + 1e-11],
+        [-0.0904, 0.0049, 0.00046 + 1e-11],
+        [-0.0853, 0.0106, 0.00046 + 1e-11],
+    ])
+    faces = np.array([[0, 1, 2], [3, 4, 5]])
+    assert len(self_intersecting_faces(vertices, faces)) == 0
+
+    # And a pair that genuinely crosses is still caught.
+    assert len(self_intersecting_faces(*_crossing_pair())) == 2
+
+
+def _crossing_pair():
+    """Two triangles that really do pass through each other."""
+    import numpy as np
+
+    vertices = np.array([
+        [0.0, 0.0, 0.0], [4.0, 0.0, 0.0], [0.0, 4.0, 0.0],
+        [1.0, 1.0, -1.0], [1.0, 1.0, 1.0], [3.0, 1.0, 0.0],
+    ])
+    return vertices, np.array([[0, 1, 2], [3, 4, 5]])
+
+
 def test_flipped_normals_is_not_a_shell():
     """Inconsistent winding corrupts the divergence volume.
 

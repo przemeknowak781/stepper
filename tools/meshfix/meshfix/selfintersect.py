@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import numpy as np
 
+from .io import float32_ulp
+
 #: Faces whose bounding box spans more cells than this are bucketed by their
 #: centre only. Without the cap one huge triangle would be inserted into
 #: thousands of cells and dominate the broad phase.
@@ -71,14 +73,19 @@ def _candidate_pairs(lo: np.ndarray, hi: np.ndarray) -> np.ndarray:
     cell_lo = np.floor((lo - origin) / cell).astype(np.int64)
     cell_hi = np.floor((hi - origin) / cell).astype(np.int64)
     span = cell_hi - cell_lo + 1
-    counts = span.prod(axis=1)
+    # `np.repeat` wants its counts as `intp`, which is **32-bit under
+    # Emscripten** — so passing the int64 these arithmetic results default to
+    # raises "cannot cast int64 to int32 safely" in Pyodide while working fine
+    # on a 64-bit host. Every repeat count in this function is cast for that
+    # reason; see NOTES.md §11.
+    counts = span.prod(axis=1).astype(np.intp)
 
     # Oversized faces collapse to a single cell so the insert count stays linear.
     oversized = counts > MAX_CELLS_PER_FACE
     if oversized.any():
         cell_lo[oversized] = (cell_lo[oversized] + cell_hi[oversized]) // 2
         span[oversized] = 1
-        counts = span.prod(axis=1)
+        counts = span.prod(axis=1).astype(np.intp)
 
     total = int(counts.sum())
     if total == 0:
@@ -107,7 +114,7 @@ def _candidate_pairs(lo: np.ndarray, hi: np.ndarray) -> np.ndarray:
     # np.unique here would sort a second time for no reason.
     boundaries = np.flatnonzero(np.diff(keys)) + 1
     run_starts = np.concatenate([[0], boundaries])
-    run_lengths = np.diff(np.concatenate([run_starts, [len(keys)]]))
+    run_lengths = np.diff(np.concatenate([run_starts, [len(keys)]])).astype(np.intp)
     if len(run_lengths) == 0 or run_lengths.max() < 2:
         return np.empty((0, 2), dtype=np.int64)
 
@@ -211,7 +218,7 @@ def _tri_tri_intersect(t1: np.ndarray, t2: np.ndarray, eps_rel: float = 1e-9) ->
     if len1 == 0.0 or len2 == 0.0:
         return False        # a degenerate face is A6's business, not A5's
 
-    eps = eps_rel * max(_extent(t1), _extent(t2))
+    eps = _tolerance(t1, t2, eps_rel)
 
     dist1 = (t1 - t2[0]) @ n2
     if np.all(dist1 > eps) or np.all(dist1 < -eps):
@@ -221,8 +228,22 @@ def _tri_tri_intersect(t1: np.ndarray, t2: np.ndarray, eps_rel: float = 1e-9) ->
     if np.all(dist2 > eps) or np.all(dist2 < -eps):
         return False
 
+    # Coplanar, and the test has to be about the *distances*, not just the angle
+    # between the normals. Two triangles can sit 1e-11 apart — far under the
+    # float32 spacing their coordinates are stored at — while their normals
+    # still differ by enough to pass an angle threshold. The crossing-chord
+    # branch below then has no real chord to find: vertices within `eps` of the
+    # plane are counted as lying on it, so the "chord" becomes the triangle's
+    # whole extent and any two such triangles appear to overlap. That is how a
+    # CGAL alpha wrap, which is guaranteed intersection-free, came back with two
+    # intersecting faces.
     direction = np.cross(n1, n2)
-    if float(np.linalg.norm(direction)) <= eps_rel:   # sine of the angle between them
+    coplanar = (
+        float(np.linalg.norm(direction)) <= eps_rel      # normals parallel
+        or bool(np.all(np.abs(dist1) <= eps))            # or too close to tell apart
+        or bool(np.all(np.abs(dist2) <= eps))
+    )
+    if coplanar:
         return _coplanar_overlap(t1, t2, n1)
 
     axis = int(np.argmax(np.abs(direction)))
@@ -243,6 +264,20 @@ def _unit_normal(tri: np.ndarray) -> tuple[np.ndarray, float]:
 def _extent(tri: np.ndarray) -> float:
     """Longest side of the triangle's bounding box — its characteristic size."""
     return float((tri.max(axis=0) - tri.min(axis=0)).max())
+
+
+def _tolerance(t1: np.ndarray, t2: np.ndarray, eps_rel: float) -> float:
+    """How close two surfaces have to be before they count as touching.
+
+    Relative to the triangles, and floored at the spacing of float32 near their
+    coordinates. Meshes round-trip through binary STL, which stores float32, so
+    an overlap shallower than one ulp is a property of the file format rather
+    than of the geometry — the same argument that floors the weld tolerance
+    (SPEC 8.1, change C9).
+    """
+    size = max(_extent(t1), _extent(t2))
+    magnitude = max(float(np.abs(t1).max()), float(np.abs(t2).max()))
+    return max(eps_rel * size, float32_ulp(magnitude))
 
 
 def _plane_interval(proj: np.ndarray, dist: np.ndarray, eps: float):

@@ -35,11 +35,10 @@ from urllib.parse import parse_qs, urlparse
 
 from . import __version__
 from .backends import KNOWN_BACKENDS, RunContext, get_backend
-from .diagnose import SHELL_SCORE_THRESHOLD, analyze
+from .diagnose import analyze
 from .io import load_mesh, save_mesh, sha256_file
 from .metrics import compare
-from .orchestrate import build_chain, run_chain
-from .postprocess import thicken_shell
+from .orchestrate import build_chain, prepare_shell, run_chain
 from .report import Report
 from .validate import validate
 
@@ -213,9 +212,19 @@ def _process(payload: bytes, params: dict, *, diagnose_only: bool) -> dict:
             report.accepted = False
             return {"report": report.to_dict(), "stl_base64": None, "refused": a10.reason}
 
-        if shell_thickness is not None and diagnosis.shell_score >= SHELL_SCORE_THRESHOLD:
-            mesh = thicken_shell(mesh, shell_thickness)
-            report.warnings.append(f"shell_thickened (thickness={shell_thickness})")
+        # Same helper the CLI uses. It carries three linked adjustments (what
+        # fidelity is measured against, the deviation budget, the volume
+        # reference); re-deriving them here is how the service silently drifted
+        # from the CLI once already.
+        plan = prepare_shell(
+            mesh,
+            shell_score=diagnosis.shell_score,
+            shell_thickness=shell_thickness,
+            max_deviation=max_deviation,
+        )
+        if plan.warning:
+            mesh = plan.mesh
+            report.warnings.append(plan.warning)
             save_mesh(mesh, source_path)
 
         ctx = RunContext(
@@ -229,8 +238,9 @@ def _process(payload: bytes, params: dict, *, diagnose_only: bool) -> dict:
         chain = build_chain(diagnosis.verdict, params.get("backend", "auto"), None)
         outcome = run_chain(
             source=mesh, source_path=source_path, chain=chain, workdir=workdir, ctx=ctx,
-            expected_components=expected_components, max_deviation=max_deviation,
+            expected_components=expected_components, max_deviation=plan.deviation_budget,
             min_wall=min_wall, strict=strict, seed=seed,
+            expected_volume=plan.expected_volume, reference=plan.reference,
         )
         report.warnings.extend(outcome.warnings)
         report.backend_attempts = [a.to_dict() for a in outcome.attempts]
