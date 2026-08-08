@@ -11,17 +11,28 @@
  * them as bare filenames resolved against the same `indexURL`, so hosting the
  * core alone just trades a missing `.wasm` for `No module named 'micropip'`.
  *
+ * The npm package does **not** ship those wheels — its `files` field lists the
+ * core only — so they are downloaded from the release CDN, pinned to the
+ * installed version, and cached in the output directory. Do not be fooled by
+ * finding them in `node_modules` locally: Pyodide writes wheels it has fetched
+ * back there ("caching the wheel in node_modules for future use"), so a machine
+ * that has ever run it looks like the package ships them, and CI does not.
+ *
  * Generated, not committed — `public/pyodide/` is gitignored and this runs as
  * part of `pnpm build`.
  */
 
 import { createRequire } from 'node:module'
-import { copyFileSync, mkdirSync, readFileSync, existsSync } from 'node:fs'
+import { copyFileSync, mkdirSync, readFileSync, writeFileSync, existsSync, statSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 
 const require = createRequire(import.meta.url)
 const source = dirname(require.resolve('pyodide/package.json'))
+const { version } = JSON.parse(readFileSync(join(source, 'package.json'), 'utf8'))
 const target = join(process.cwd(), 'public', 'pyodide')
+
+/** Where Pyodide publishes the wheels its lock file names, for this exact version. */
+const CDN = `https://cdn.jsdelivr.net/pyodide/v${version}/full/`
 
 /** Pyodide packages the worker actually imports. Everything else stays out. */
 const PACKAGES = ['numpy', 'micropip']
@@ -58,16 +69,37 @@ while (queue.length) {
   seen.add(name)
   const entry = lock.packages[name]
   if (!entry) throw new Error(`vendor-pyodide: ${name} is not in pyodide-lock.json`)
+  const to = join(target, entry.file_name)
   const from = join(source, entry.file_name)
-  if (!existsSync(from)) {
-    // Pyodide ships its wheels in the npm package; if one is absent the runtime
-    // would fetch it from the CDN instead, quietly reintroducing the network
-    // dependency this script exists to remove. Fail loudly.
-    throw new Error(`vendor-pyodide: ${entry.file_name} missing from the pyodide package`)
+  if (existsSync(from)) {
+    copyFileSync(from, to)
+  } else if (!existsSync(to)) {
+    // Not in the package and not already vendored, so fetch it once. Skipping
+    // this would leave the runtime to reach for the CDN itself at page load,
+    // quietly reintroducing the network dependency this script exists to
+    // remove — the failure the caller would see is `No module named
+    // 'micropip'`, which says nothing about a missing wheel.
+    const response = await fetch(CDN + entry.file_name)
+    if (!response.ok) {
+      throw new Error(
+        `vendor-pyodide: cannot fetch ${entry.file_name} (${response.status}) from ${CDN}`,
+      )
+    }
+    writeFileSync(to, Buffer.from(await response.arrayBuffer()))
   }
-  copyFileSync(from, join(target, entry.file_name))
   copied++
   queue.push(...(entry.depends ?? []))
+}
+
+// The worker cannot boot without these, and a missing one shows up at runtime
+// as a 404 inside a wasm loader rather than as a build failure. Check here,
+// where the message can say what is actually wrong.
+const REQUIRED = ['pyodide.asm.wasm', 'pyodide.asm.mjs', 'python_stdlib.zip', 'pyodide-lock.json']
+for (const name of REQUIRED) {
+  const path = join(target, name)
+  if (!existsSync(path) || statSync(path).size === 0) {
+    throw new Error(`vendor-pyodide: ${name} is missing or empty in ${target}`)
+  }
 }
 
 console.log(`vendor-pyodide: ${copied} files -> public/pyodide (${[...seen].sort().join(', ')})`)
